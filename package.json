@@ -1,0 +1,29 @@
+{
+  "name": "@sanqianx/ai-coding-knowledge-engine",
+  "version": "0.1.0",
+  "description": "Knowledge engine module for project-knowledge: commit-boundary triggered knowledge analysis/generation (trigger plane) and retrieval for development assistants (retrieval plane).",
+  "license": "Apache-2.0",
+  "main": "src/server.js",
+  "bin": {
+    "knowledge-engine": "src/bin.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src",
+    "ui",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node src/bin.js serve"
+  },
+  "keywords": [
+    "knowledge-base",
+    "knowledge-engine",
+    "commit-boundary",
+    "retrieval",
+    "project-knowledge",
+    "mcp"
+  ]
+}

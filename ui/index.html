@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>knowledge-engine · 知识引擎调试台</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <div class="mark">KE</div>
+      <div class="name">knowledge-engine <em>调试台</em></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item on" data-view="overview">概览</button>
+      <button class="nav-item" data-view="projects">项目</button>
+      <button class="nav-item" data-view="runs">分析运行</button>
+      <button class="nav-item" data-view="retrieval">检索调试</button>
+      <button class="nav-item" data-view="events">事件流</button>
+    </nav>
+    <div class="side-foot">
+      <span class="dot" id="healthDot"></span>
+      <span id="healthText">连接中…</span>
+    </div>
+  </aside>
+
+  <main>
+    <!-- 概览 -->
+    <section id="view-overview" class="view on">
+      <h1>概览</h1>
+      <div class="cards">
+        <div class="card"><div class="card-num" id="statProjects">–</div><div class="card-label">注册项目</div></div>
+        <div class="card"><div class="card-num" id="statRunning">–</div><div class="card-label">进行中运行</div></div>
+        <div class="card"><div class="card-num" id="statSucceeded">–</div><div class="card-label">累计成功</div></div>
+        <div class="card"><div class="card-num" id="statFailed">–</div><div class="card-label">累计失败</div></div>
+        <div class="card"><div class="card-num" id="statCursor">–</div><div class="card-label">journal 游标</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">最近运行</div>
+          <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>状态</th><th>耗时</th></tr></thead>
+          <tbody id="overviewRuns"></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-title">服务信息</div>
+          <dl class="kv" id="serviceInfo"></dl>
+        </div>
+      </div>
+    </section>
+
+    <!-- 项目 -->
+    <section id="view-projects" class="view">
+      <h1>项目</h1>
+      <div class="toolbar">
+        <button class="btn primary" id="btnShowRegister">注册项目</button>
+      </div>
+      <form id="registerForm" class="panel form hidden">
+        <div class="form-row">
+          <label>项目ID<input name="projectId" placeholder="my-project" required></label>
+          <label>名称<input name="name" placeholder="显示名"></label>
+        </div>
+        <div class="form-row">
+          <label>仓库路径<input name="repoPath" placeholder="D:\path\to\repo"></label>
+          <label>知识库路径<input name="knowledgePath" placeholder="D:\path\to\knowledge"></label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn primary">注册</button>
+          <button type="button" class="btn" id="btnCancelRegister">取消</button>
+        </div>
+      </form>
+      <div class="panel">
+        <table><thead><tr><th>项目ID</th><th>名称</th><th>仓库路径</th><th>知识库路径</th><th>最近 commit</th><th></th></tr></thead>
+        <tbody id="projectsBody"></tbody></table>
+      </div>
+    </section>
+
+    <!-- 分析运行 -->
+    <section id="view-runs" class="view">
+      <h1>分析运行</h1>
+      <div class="toolbar">
+        <select id="runProjectFilter"><option value="">全部项目</option></select>
+        <select id="runStateFilter">
+          <option value="">全部状态</option>
+          <option value="queued">queued</option>
+          <option value="running">running</option>
+          <option value="succeeded">succeeded</option>
+          <option value="failed">failed</option>
+        </select>
+        <button class="btn primary" id="btnShowTrigger">模拟触发分析</button>
+      </div>
+      <form id="triggerForm" class="panel form hidden">
+        <div class="form-row">
+          <label>项目<select name="projectId" id="triggerProject"></select></label>
+          <label>commit SHA（可选）<input name="commitSha" placeholder="留空自动生成"></label>
+        </div>
+        <div class="form-row">
+          <label>备注（commit message）<input name="note" placeholder="feat: …"></label>
+          <label class="checkbox"><input type="checkbox" name="simulateFailure"> 模拟失败态</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn primary">触发</button>
+          <button type="button" class="btn" id="btnCancelTrigger">取消</button>
+        </div>
+      </form>
+      <div class="panel">
+        <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>触发</th><th>状态</th><th>开始时间</th><th>耗时</th></tr></thead>
+        <tbody id="runsBody"></tbody></table>
+      </div>
+      <div class="panel hidden" id="runDetail">
+        <div class="panel-title">运行详情 <span class="mono" id="runDetailId"></span></div>
+        <dl class="kv" id="runMeta"></dl>
+        <div class="panel-sub">staging manifest（晋升前产物，校验通过才写入知识树）</div>
+        <pre class="code" id="runStaging">该运行没有 staging 产物。</pre>
+      </div>
+    </section>
+
+    <!-- 检索调试 -->
+    <section id="view-retrieval" class="view">
+      <h1>检索调试</h1>
+      <div class="panel form">
+        <div class="form-row">
+          <label>项目<select id="retrievalProject"></select></label>
+          <label class="grow">查询<input id="retrievalQuery" placeholder="例如：commit 之后分析是怎么触发的"></label>
+          <label>limit<input id="retrievalLimit" type="number" value="5" min="1" max="30" class="w70"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn primary" id="btnSearch">search</button>
+          <button class="btn" id="btnAsk">ask</button>
+        </div>
+      </div>
+      <div class="panel hidden" id="askPanel">
+        <div class="panel-title">ask 答案（确定性拼接，非 LLM 生成）</div>
+        <div class="answer" id="askAnswer"></div>
+        <div class="panel-sub">引用</div>
+        <ol class="citations" id="askCitations"></ol>
+      </div>
+      <div class="panel">
+        <div class="panel-title">search 结果</div>
+        <table><thead><tr><th>路径</th><th>标题</th><th>得分</th><th>摘要</th></tr></thead>
+        <tbody id="searchBody"><tr><td colspan="4" class="empty">输入查询后执行 search。</td></tr></tbody></table>
+      </div>
+    </section>
+
+    <!-- 事件流 -->
+    <section id="view-events" class="view">
+      <h1>事件流</h1>
+      <div class="toolbar">
+        <span class="hint">阶段 3 将改为 event-bridge journal 的注册消费者游标；当前为本地 store。</span>
+        <button class="btn" id="btnInjectEvent">注入测试事件</button>
+      </div>
+      <div class="panel">
+        <table><thead><tr><th>seq</th><th>类型</th><th>项目</th><th>摘要</th><th>时间</th></tr></thead>
+        <tbody id="eventsBody"></tbody></table>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
