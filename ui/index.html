@@ -3,161 +3,93 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>knowledge-engine · 知识引擎调试台</title>
-<link rel="stylesheet" href="/app.css">
+<title>knowledge-engine · 知识生命周期控制台</title>
+<link rel="stylesheet" href="./app.css">
 </head>
 <body>
 <div id="app">
   <aside>
     <div class="brand">
       <div class="mark">KE</div>
-      <div class="name">knowledge-engine <em>调试台</em></div>
+      <div class="brand-copy"><strong>knowledge-engine</strong><span>知识生命周期控制台</span></div>
     </div>
-    <nav class="nav">
-      <button class="nav-item on" data-view="overview">概览</button>
-      <button class="nav-item" data-view="projects">项目</button>
-      <button class="nav-item" data-view="runs">分析运行</button>
-      <button class="nav-item" data-view="retrieval">检索调试</button>
-      <button class="nav-item" data-view="events">事件流</button>
+    <nav class="nav" aria-label="知识引擎导航">
+      <p class="nav-label">运行</p>
+      <button class="nav-item on" data-view="overview"><span class="nav-symbol">◎</span>知识脉搏</button>
+      <button class="nav-item" data-view="runs"><span class="nav-symbol">↳</span>生成流水线</button>
+      <button class="nav-item" data-view="knowledge"><span class="nav-symbol">□</span>知识状态</button>
+      <button class="nav-item" data-view="retrieval"><span class="nav-symbol">⌕</span>检索验证</button>
+      <p class="nav-label nav-label-lower">调试</p>
+      <button class="nav-item" data-view="projects"><span class="nav-symbol">↔</span>项目接线</button>
+      <button class="nav-item" data-view="events"><span class="nav-symbol">≋</span>事件流</button>
     </nav>
-    <div class="side-foot">
-      <span class="dot" id="healthDot"></span>
-      <span id="healthText">连接中…</span>
-    </div>
+    <div class="side-foot"><span class="dot" id="healthDot"></span><span id="healthText">连接中…</span></div>
   </aside>
 
   <main>
-    <!-- 概览 -->
+    <header class="topbar">
+      <div><p class="eyebrow" id="viewKicker">knowledge control plane</p><h1 id="viewTitle">知识脉搏</h1></div>
+      <label class="scope-control">范围<select id="scopeProject"><option value="">全部项目</option></select></label>
+    </header>
+
     <section id="view-overview" class="view on">
-      <h1>概览</h1>
-      <div class="cards">
-        <div class="card"><div class="card-num" id="statProjects">–</div><div class="card-label">注册项目</div></div>
-        <div class="card"><div class="card-num" id="statRunning">–</div><div class="card-label">进行中运行</div></div>
-        <div class="card"><div class="card-num" id="statSucceeded">–</div><div class="card-label">累计成功</div></div>
-        <div class="card"><div class="card-num" id="statFailed">–</div><div class="card-label">累计失败</div></div>
-        <div class="card"><div class="card-num" id="statCursor">–</div><div class="card-label">journal 游标</div></div>
+      <div class="view-intro"><p>从 commit 证据到可引用知识：这里看见每一段链路是否连续，而不是只看一串运行日志。</p><button class="btn primary" data-goto="runs">查看生成流水线</button></div>
+      <section class="flow-panel" aria-labelledby="flowTitle">
+        <div class="panel-heading"><div><p class="section-kicker">当前知识流</p><h2 id="flowTitle">证据正在如何成为知识</h2></div><span class="phase-pill" id="flowPhase">正在读取运行状态</span></div>
+        <ol class="flow-track">
+          <li class="flow-step" id="flowJournal"><span class="flow-number">01</span><div><strong>事件入站</strong><small id="flowJournalText">journal 等待连接</small></div></li>
+          <li class="flow-step" id="flowReconcile"><span class="flow-number">02</span><div><strong>提交对账</strong><small id="flowReconcileText">等待 commit boundary</small></div></li>
+          <li class="flow-step" id="flowAnalyze"><span class="flow-number">03</span><div><strong>证据分析</strong><small id="flowAnalyzeText">没有运行中的分析</small></div></li>
+          <li class="flow-step" id="flowPromote"><span class="flow-number">04</span><div><strong>校验与晋升</strong><small id="flowPromoteText">尚未生成暂存产物</small></div></li>
+          <li class="flow-step is-pending" id="flowIndex"><span class="flow-number">05</span><div><strong>检索就绪</strong><small id="flowIndexText">等待接入 vector-hub</small></div></li>
+        </ol>
+      </section>
+      <div class="metric-grid">
+        <article class="metric"><span>本范围项目</span><strong id="statProjects">–</strong><small id="statProjectsDetail">等待服务响应</small></article>
+        <article class="metric"><span>进行中</span><strong id="statRunning">–</strong><small id="statRunningDetail">队列与分析会话</small></article>
+        <article class="metric"><span>已晋升</span><strong id="statSucceeded">–</strong><small id="statSucceededDetail">成功完成的知识运行</small></article>
+        <article class="metric metric-warn"><span>需要处理</span><strong id="statFailed">–</strong><small id="statFailedDetail">失败或中断的运行</small></article>
       </div>
-      <div class="grid-2">
-        <div class="panel">
-          <div class="panel-title">最近运行</div>
-          <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>状态</th><th>耗时</th></tr></thead>
-          <tbody id="overviewRuns"></tbody></table>
-        </div>
-        <div class="panel">
-          <div class="panel-title">服务信息</div>
-          <dl class="kv" id="serviceInfo"></dl>
-        </div>
-      </div>
-    </section>
-
-    <!-- 项目 -->
-    <section id="view-projects" class="view">
-      <h1>项目</h1>
-      <div class="toolbar">
-        <button class="btn primary" id="btnShowRegister">注册项目</button>
-      </div>
-      <form id="registerForm" class="panel form hidden">
-        <div class="form-row">
-          <label>项目ID<input name="projectId" placeholder="my-project" required></label>
-          <label>名称<input name="name" placeholder="显示名"></label>
-        </div>
-        <div class="form-row">
-          <label>仓库路径<input name="repoPath" placeholder="D:\path\to\repo"></label>
-          <label>知识库路径<input name="knowledgePath" placeholder="D:\path\to\knowledge"></label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn primary">注册</button>
-          <button type="button" class="btn" id="btnCancelRegister">取消</button>
-        </div>
-      </form>
-      <div class="panel">
-        <table><thead><tr><th>项目ID</th><th>名称</th><th>仓库路径</th><th>知识库路径</th><th>最近 commit</th><th></th></tr></thead>
-        <tbody id="projectsBody"></tbody></table>
+      <div class="overview-grid">
+        <section class="panel run-panel"><div class="panel-heading"><div><p class="section-kicker">运行记录</p><h2>最近知识变更</h2></div><button class="quiet-link" data-goto="runs">全部运行 →</button></div><div class="table-wrap"><table><thead><tr><th>commit</th><th>项目</th><th>状态</th><th>产物</th><th>耗时</th></tr></thead><tbody id="overviewRuns"></tbody></table></div></section>
+        <section class="panel attention-panel"><div class="panel-heading"><div><p class="section-kicker">可操作项</p><h2 id="attentionTitle">正在检查链路</h2></div></div><p class="attention-body" id="attentionBody">正在读取运行、事件和服务健康状态。</p><dl class="service-list" id="serviceInfo"></dl></section>
       </div>
     </section>
 
-    <!-- 分析运行 -->
     <section id="view-runs" class="view">
-      <h1>分析运行</h1>
-      <div class="toolbar">
-        <select id="runProjectFilter"><option value="">全部项目</option></select>
-        <select id="runStateFilter">
-          <option value="">全部状态</option>
-          <option value="queued">queued</option>
-          <option value="running">running</option>
-          <option value="succeeded">succeeded</option>
-          <option value="failed">failed</option>
-        </select>
-        <button class="btn primary" id="btnShowTrigger">模拟触发分析</button>
-      </div>
-      <form id="triggerForm" class="panel form hidden">
-        <div class="form-row">
-          <label>项目<select name="projectId" id="triggerProject"></select></label>
-          <label>commit SHA（可选）<input name="commitSha" placeholder="留空自动生成"></label>
-        </div>
-        <div class="form-row">
-          <label>备注（commit message）<input name="note" placeholder="feat: …"></label>
-          <label class="checkbox"><input type="checkbox" name="simulateFailure"> 模拟失败态</label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn primary">触发</button>
-          <button type="button" class="btn" id="btnCancelTrigger">取消</button>
-        </div>
-      </form>
-      <div class="panel">
-        <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>触发</th><th>状态</th><th>开始时间</th><th>耗时</th></tr></thead>
-        <tbody id="runsBody"></tbody></table>
-      </div>
-      <div class="panel hidden" id="runDetail">
-        <div class="panel-title">运行详情 <span class="mono" id="runDetailId"></span></div>
-        <dl class="kv" id="runMeta"></dl>
-        <div class="panel-sub">staging manifest（晋升前产物，校验通过才写入知识树）</div>
-        <pre class="code" id="runStaging">该运行没有 staging 产物。</pre>
-      </div>
+      <div class="view-intro compact"><p>查看提交证据、分析进度、知识晋升与索引结果。提交由事件入口自动进入维护队列。</p><button class="btn debug-only" id="btnShowTrigger">手动维护</button></div>
+      <div class="toolbar filters"><select id="runProjectFilter"><option value="">全部项目</option></select><select id="runStateFilter"><option value="">全部状态</option><option value="queued">排队</option><option value="running">运行中</option><option value="succeeded">可检索</option><option value="index-pending">索引待修复</option><option value="failed">失败</option></select></div>
+      <form id="triggerForm" class="panel form hidden"><div class="panel-heading"><div><p class="section-kicker">维护诊断</p><h2>分析一次真实提交</h2></div></div><div class="form-row"><label>项目<select name="projectId" id="triggerProject" required></select></label><label>commit SHA<input name="commitSha" placeholder="输入仓库中的真实提交 SHA" pattern="[a-fA-F0-9]{7,64}" required></label></div><label class="checkbox debug-only"><input type="checkbox" name="simulateFailure"> 模拟失败态（调试模式）</label><div class="form-actions"><button type="submit" class="btn primary">开始维护</button><button type="button" class="btn" id="btnCancelTrigger">取消</button></div></form>
+      <section class="panel"><div class="table-wrap"><table><thead><tr><th>commit</th><th>项目</th><th>入口</th><th>状态</th><th>开始</th><th>耗时</th></tr></thead><tbody id="runsBody"></tbody></table></div></section>
+      <section class="panel hidden" id="runDetail"><div class="panel-heading"><div><p class="section-kicker">运行追溯</p><h2>运行 <span class="mono" id="runDetailId"></span></h2></div></div><ol class="run-timeline" id="runTimeline" aria-label="运行状态时间线"></ol><div class="detail-grid"><dl class="kv" id="runMeta"></dl><div><p class="panel-sub">staging manifest</p><pre class="code" id="runStaging">该运行没有 staging 产物。</pre></div></div></section>
     </section>
 
-    <!-- 检索调试 -->
+    <section id="view-knowledge" class="view">
+      <div class="view-intro compact"><p>知识树是唯一事实源；引擎只记录其生成证据、晋升结果与派生索引的同步状态。</p><button class="btn" data-goto="retrieval">验证检索</button></div>
+      <div class="knowledge-hero panel"><div><p class="section-kicker">知识树</p><h2 id="knowledgeProjectName">选择一个项目</h2><p class="mono knowledge-path" id="knowledgePath">–</p></div><div class="knowledge-summary"><span>最近晋升</span><strong id="knowledgeLastCommit">–</strong><small id="knowledgeLastAt">尚无成功运行</small></div></div>
+      <div class="overview-grid knowledge-grid"><section class="panel"><div class="panel-heading"><div><p class="section-kicker">本次知识影响</p><h2>已晋升变更清单</h2></div><span class="phase-pill" id="knowledgeOperationCount">0 项</span></div><div class="knowledge-list" id="knowledgeOperations"></div></section><section class="panel"><div class="panel-heading"><div><p class="section-kicker">可用性</p><h2>派生能力状态</h2></div></div><div class="readiness-list"><div><span class="readiness-dot is-ok"></span><p><strong>规范知识树</strong><small>由晋升路径单写；检索只读。</small></p><b>事实源</b></div><div><span class="readiness-dot is-ok"></span><p><strong>文件检索</strong><small>读取现存知识文件；向量离线时降级，不返回过期文件。</small></p><b>已接入</b></div><div><span class="readiness-dot is-pending"></span><p><strong>vector-hub 索引</strong><small>从知识树派生，可重建，不反向写入。</small></p><b id="knowledgeIndexState">等待运行</b></div></div></section></div>
+    </section>
+
     <section id="view-retrieval" class="view">
-      <h1>检索调试</h1>
-      <div class="panel form">
-        <div class="form-row">
-          <label>项目<select id="retrievalProject"></select></label>
-          <label class="grow">查询<input id="retrievalQuery" placeholder="例如：commit 之后分析是怎么触发的"></label>
-          <label>limit<input id="retrievalLimit" type="number" value="5" min="1" max="30" class="w70"></label>
-        </div>
-        <div class="form-actions">
-          <button class="btn primary" id="btnSearch">search</button>
-          <button class="btn" id="btnAsk">ask</button>
-        </div>
-      </div>
-      <div class="panel hidden" id="askPanel">
-        <div class="panel-title">ask 答案（确定性拼接，非 LLM 生成）</div>
-        <div class="answer" id="askAnswer"></div>
-        <div class="panel-sub">引用</div>
-        <ol class="citations" id="askCitations"></ol>
-      </div>
-      <div class="panel">
-        <div class="panel-title">search 结果</div>
-        <table><thead><tr><th>路径</th><th>标题</th><th>得分</th><th>摘要</th></tr></thead>
-        <tbody id="searchBody"><tr><td colspan="4" class="empty">输入查询后执行 search。</td></tr></tbody></table>
-      </div>
+      <div class="view-intro compact"><p>验证开发 agent 实际获得的上下文：命中来源、得分、摘要和可追溯引用应在同一处可见。</p></div>
+      <div class="panel form retrieval-form"><div class="form-row"><label>项目<select id="retrievalProject"></select></label><label class="grow">查询<input id="retrievalQuery" placeholder="例如：commit 之后分析是怎么触发的"></label><label>limit<input id="retrievalLimit" type="number" value="5" min="1" max="30" class="w70"></label></div><div class="form-actions"><button class="btn primary" id="btnSearch">search</button><button class="btn" id="btnAsk">ask</button></div></div>
+      <section class="panel hidden" id="askPanel"><div class="panel-heading"><div><p class="section-kicker">带引用回答</p><h2>ask 结果</h2></div><span class="phase-pill">确定性拼接</span></div><div class="answer" id="askAnswer"></div><p class="panel-sub">引用</p><ol class="citations" id="askCitations"></ol></section>
+      <section class="panel"><div class="panel-heading"><div><p class="section-kicker">检索证据</p><h2>search 命中</h2></div></div><div class="table-wrap"><table><thead><tr><th>路径</th><th>标题</th><th>得分</th><th>摘要</th></tr></thead><tbody id="searchBody"><tr><td colspan="4" class="empty">输入查询后执行 search。</td></tr></tbody></table></div></section>
     </section>
 
-    <!-- 事件流 -->
+    <section id="view-projects" class="view">
+      <div class="view-intro compact"><p>项目主档、设置和密钥属于 <span class="mono">project-knowledge-base</span> 外壳。本页只用于核对其向引擎投递的运行接线。</p><button class="btn" id="btnShowRegister">调试注册</button></div>
+      <form id="registerForm" class="panel form hidden"><div class="panel-heading"><div><p class="section-kicker">维护诊断</p><h2>登记真实目录绑定</h2></div></div><div class="form-row"><label>项目ID<input name="projectId" placeholder="my-project" required></label><label>名称<input name="name" placeholder="显示名"></label></div><div class="form-row"><label>仓库路径<input name="repoPath" placeholder="D:\path\to\repo" required></label><label>知识库路径<input name="knowledgePath" placeholder="D:\path\to\knowledge" required></label></div><div class="form-actions"><button type="submit" class="btn primary">登记</button><button type="button" class="btn" id="btnCancelRegister">取消</button></div></form>
+      <section class="panel"><div class="table-wrap"><table><thead><tr><th>项目</th><th>仓库</th><th>知识树</th><th>最近 commit</th><th>接线</th></tr></thead><tbody id="projectsBody"></tbody></table></div></section>
+    </section>
+
     <section id="view-events" class="view">
-      <h1>事件流</h1>
-      <div class="toolbar">
-        <span class="hint">阶段 3 将改为 event-bridge journal 的注册消费者游标；当前为本地 store。</span>
-        <button class="btn" id="btnInjectEvent">注入测试事件</button>
-      </div>
-      <div class="panel">
-        <table><thead><tr><th>seq</th><th>类型</th><th>项目</th><th>摘要</th><th>时间</th></tr></thead>
-        <tbody id="eventsBody"></tbody></table>
-      </div>
+      <div class="view-intro compact"><p>event-bridge 是唯一入口。引擎先持久化证据与任务，再推进各项目的消费游标；封存提交不代表消费者已经读取。</p><button class="btn debug-only" id="btnInjectEvent">注入测试事件</button></div>
+      <section class="panel"><div class="panel-heading"><div><p class="section-kicker">原始事实</p><h2>事件流</h2></div><span class="phase-pill" id="eventCursor">游标 –</span></div><div class="table-wrap"><table><thead><tr><th>seq</th><th>类型</th><th>项目</th><th>摘要</th><th>时间</th></tr></thead><tbody id="eventsBody"></tbody></table></div></section>
     </section>
   </main>
 </div>
-<div id="toast"></div>
-<script src="/app.js"></script>
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="./app.js"></script>
 </body>
 </html>

@@ -1,0 +1,95 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const net = require('node:net');
+const assert = require('node:assert/strict');
+const AtomicFile = require('../../src/runtime/atomic-file');
+let ownedShell;
+async function freePort() { const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port; }
+async function main() {
+  const reportFile = path.resolve(process.argv[2]); const installation = JSON.parse(fs.readFileSync(reportFile));
+  assert.ok(installation.integrityPassed && installation.schema === 'project-knowledge/installed-candidates/v1');
+  assert.equal(path.dirname(installation.installedRoot), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(installation.installedRoot).startsWith('kb-installed-product-'));
+  const root = path.join(installation.installedRoot, 'acceptance-data');
+  fs.mkdirSync(root, { recursive: true });
+  const [terminal, vector, events, engine] = await Promise.all(Array.from({ length: 4 }, freePort));
+  Object.assign(process.env, {
+    KB_DATA_DIR: path.join(root, 'shell'), KB_MODULES_AUTOSTART: '1', KB_MODULES_REGISTER: '1',
+    AGENT_TERMINAL_DATA_DIR: path.join(root, 'workbench'), AI_CODING_EVENT_BRIDGE_HOME: path.join(root, 'events'),
+    VECTOR_HUB_CONFIG: path.join(root, 'vector-config.json'), VECTOR_HUB_DISABLE_PICKER: '1', KB_WORKBENCH_DISABLE_PICKER: '1',
+    VECTOR_HUB_LEGACY_CONFIG: path.join(root, 'unused-legacy-config.json'),
+    KB_TERMINAL_URL: `http://127.0.0.1:${terminal}`, KB_VECTORHUB_URL: `http://127.0.0.1:${vector}`,
+    KB_EVENTBRIDGE_URL: `http://127.0.0.1:${events}`, KB_KNOWLEDGE_ENGINE_URL: `http://127.0.0.1:${engine}`,
+    MINIMAX_API_KEY: '', ANTHROPIC_API_KEY: '', ANTHROPIC_AUTH_TOKEN: '', NODE_PATH: '',
+  });
+  delete process.env.AI_CODING_EVENT_BRIDGE_MODULE;
+  const { startServer } = require(path.join(installation.core, '_site/lib/server-app'));
+  const shell = await startServer({ rootDir: installation.core, dataDir: path.join(root, 'shell'), port: Number(process.env.KB_INSTALLED_ACCEPTANCE_PORT || 5803), host: '127.0.0.1' });
+  ownedShell = shell;
+  const url = `http://127.0.0.1:${shell.port}`;
+  const read = async route => { const response = await fetch(new URL(route, url)); assert.ok(response.ok, route); return response; };
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline && !Object.values((await (await read('/api/modules/health')).json()).modules).every(module => module.up)) await new Promise(resolve => setTimeout(resolve, 200));
+  const health = (await (await read('/api/modules/health')).json()).modules;
+  assert.ok(Object.values(health).every(module => module.up), 'all four installed services must start');
+  const content = await (await read('/')).text(); assert.ok(content.includes('src="/product.js"') && !content.includes('srcdoc'));
+  for (const route of ['/modules/terminal/agent-terminal/app.js', '/modules/terminal/agent-terminal/app.css', '/modules/vectorhub/', '/modules/eventbridge/', '/modules/engine/']) await read(route);
+  const snapshot = await (await read('/api/engine/snapshot')).json();
+  if (!process.argv.includes('--existing-data')) { assert.equal(snapshot.projects.length, 0); assert.equal(snapshot.runs.length, 0); }
+  await shell.runtime.moduleBridge.syncEngineConfiguration();
+  const progress = { schema: 'project-knowledge/installed-startup/v1', mode: 'real installed modules; no Agent request during startup', url, installedRoot: installation.installedRoot, core: installation.core, integrityPassed: true, modules: Object.fromEntries(Object.entries(health).map(([key, value]) => [key, { up: value.up, url: value.url }])), emptyState: snapshot.projects.length === 0 && snapshot.runs.length === 0, registeredProjects: snapshot.projects.length, checkedAt: new Date().toISOString(), pid: process.pid };
+  AtomicFile.writeJsonAtomic(path.join(root, 'installed-startup-acceptance.json'), progress);
+  process.stdout.write(`INSTALLED_PRODUCT_READY ${url}\n`);
+  if (process.argv.includes('--verify-restart')) {
+    const originalChildren = [...shell.runtime.moduleBridge.supervised];
+    assert.equal(originalChildren.length, 4, 'restart verification owns only its isolated module processes');
+    const specs = shell.runtime.moduleBridge._supervisedSpecs();
+    const restarts = [];
+    for (const [index, original] of originalChildren.entries()) {
+      const name = specs[index].name;
+      const healthUrl = specs[index].url + (name === 'terminal' ? '/api/claude-workbench/v1/health' : '/api/health');
+      assert.ok(original.pid && original.exitCode === null);
+      original.kill();
+      const deadline = Date.now() + 20000;
+      let replacement;
+      while (Date.now() < deadline) {
+        replacement = shell.runtime.moduleBridge.supervised.find(child => child.pid !== original.pid && JSON.stringify(child.spawnargs) === JSON.stringify(original.spawnargs));
+        if (replacement) {
+          try { const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1000) }); if (response.ok) break; } catch {}
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      assert.ok(replacement && replacement.pid !== original.pid && replacement.exitCode === null, `${name} must restart once under its supervisor`);
+      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1000) }); assert.ok(response.ok, `${name} health after restart`); await response.json();
+      restarts.push({ name, exitedPid: original.pid, recoveredPid: replacement.pid });
+    }
+    const configured = await fetch(url + '/api/modules/configure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); assert.ok(configured.ok); await configured.json();
+    const restored = await (await read('/api/engine/snapshot')).json();
+    assert.deepEqual(restored.projects.map(p => p.projectId).sort(), snapshot.projects.map(p => p.projectId).sort());
+    assert.equal(restored.runs.length, snapshot.runs.length, 'service recovery does not duplicate maintenance');
+    const engineHealth = await (await read('/api/engine/health')).json(); assert.equal(engineHealth.executionEnabled, true); assert.equal(engineHealth.journal.enabled, true);
+    AtomicFile.writeJsonAtomic(path.join(root, 'installed-restart-acceptance.json'), { passed: true, restarts, projectIds: restored.projects.map(p => p.projectId), runs: restored.runs.length, checkedAt: new Date().toISOString() });
+    process.stdout.write('INSTALLED_FOUR_MODULE_RESTART_PASSED\n');
+  }
+  if (process.argv.includes('--verify-shutdown')) {
+    const children = [...shell.runtime.moduleBridge.supervised];
+    assert.equal(children.length, 4, 'verification must own all four module processes');
+    await shell.stop('installed-shutdown-verification');
+    const processExits = children.map(child => ({ pid: child.pid, exitCode: child.exitCode, signal: child.signalCode }));
+    assert.ok(processExits.every(child => child.exitCode === 0 && child.signal === null), `owned services must exit normally: ${JSON.stringify(processExits)}`);
+    for (const module of Object.values(health)) {
+      let up = true;
+      const deadline = Date.now() + 7000;
+      while (up && Date.now() < deadline) { try { await fetch(module.url + '/api/health', { signal: AbortSignal.timeout(500) }); } catch { up = false; } if (up) await new Promise(resolve => setTimeout(resolve, 100)); }
+      assert.equal(up, false, 'owned module process must exit with the shell');
+    }
+    AtomicFile.writeJsonAtomic(path.join(root, 'installed-shutdown-acceptance.json'), { passed: true, processExits, moduleUrls: Object.values(health).map(module => module.url), checkedAt: new Date().toISOString() });
+    process.stdout.write('INSTALLED_GRACEFUL_SHUTDOWN_PASSED\n'); return;
+  }
+  let stopped = false;
+  const stop = async () => { if (stopped) return; stopped = true; await shell.stop('installed-acceptance-stop'); process.exit(0); };
+  process.once('SIGINT', stop); process.once('SIGTERM', stop); process.stdin.on('data', input => { if (String(input).trim() === 'stop') stop(); });
+}
+main().catch(async error => { process.stderr.write(`${error.code || 'INSTALLED_ACCEPTANCE_FAILED'}: ${error.message}\n`); await ownedShell?.stop('installed-acceptance-failed'); process.exit(1); });

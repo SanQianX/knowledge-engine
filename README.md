@@ -1,6 +1,6 @@
 # knowledge-engine
 
-> 在本仓库做开发（人或 agent）先读 [AGENTS.md](AGENTS.md)：立项动机、实现状态、四阶段路线图与开发约定都在那里；本 README 只保留对外契约。
+> 开发前读 [AGENTS.md](AGENTS.md)。该指南中的脚手架状态是历史背景；当前运行契约及实现状态以本 README 为准。
 
 `project-knowledge` 模块家族的第四块：**知识引擎**。owns 两个职责面，shell 只负责连接与投影（"The shell owns no features"）：
 
@@ -33,6 +33,10 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 
 打开 `http://127.0.0.1:5790` 即调试台。默认绑定 loopback：运行历史包含 commit 证据与知识内容，不出本机。
 
+首次启动为空，不创建演示项目。`--debug` 才开放手工运行、事件注入和模拟失败。独立运行默认只提供读取与诊断；设置 `KNOWLEDGE_ENGINE_CONSUME=1` 开始消费。外壳守护使用 `KB_ENGINE_MANAGED=1`，完成受保护迁移后再通过鉴权控制接口启用消费与执行。
+
+本模块零新增 npm 依赖、CommonJS、Node ≥18；无头 Agent SDK 由宿主已安装的 Workbench/SDK 提供，缺失时明确失败，不退回假分析。完整产品的 Node 门槛为 ≥22。
+
 ## API
 
 | 方法 | 路径 | 说明 |
@@ -41,17 +45,44 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 | GET / POST | `/api/projects` | 项目列表 / 注册（按 projectId 幂等） |
 | DELETE | `/api/projects/:id` | 摘除登记 |
 | GET | `/api/runs?projectId=` | 分析运行列表（新→旧） |
-| POST | `/api/runs` | 触发分析（`{ projectId, commitSha?, note?, simulateFailure? }`） |
+| POST | `/api/runs` | 仅调试模式手工运行；必填完整 `commitSha` |
 | GET | `/api/runs/:id` | 运行详情（含 staging manifest） |
-| POST | `/api/search` | `{ projectId, query, limit }` → 得分结果 |
+| POST | `/api/runs/:id/retry` | 只恢复失败阶段；索引失败不重新分析 |
+| POST | `/api/search` | `{ projectId 或 repoPath, query, limit, scope }` → 带项目、文件、commit 的结果 |
 | POST | `/api/ask` | `{ projectId, query }` → 确定性答案 + 引用（非 LLM 生成） |
-| GET / POST | `/api/events` | 事件流查询 / 注入测试事件 |
+| GET / POST | `/api/get`、`/api/history` | 当前知识文件 / 变更历史，保留 CLI/MCP 输出字段 |
+| GET | `/api/snapshot`、`/api/progress` | 持久化快照 / 快照先行的 SSE 更新 |
+| GET / POST | `/api/events` | 真实事件查询 / 仅调试模式注入事件 |
+| POST | `/api/bridge/notify` | 唤醒 journal 消费；通知丢失仍由轮询恢复 |
+| GET / PATCH | `/api/memories`、`/api/memories/:id` | 候选和已确认记忆；编辑、确认、忽略持久化 |
+| POST | `/api/scopes` | 外壳投影智脑、领域共享目录；受运行期鉴权保护 |
+| POST | `/api/runtime-config` | 运行期模型配置，仅保留在内存；受鉴权保护 |
+| POST | `/api/migrate`、`/api/control` | 暂停状态迁移 / 迁移完成后启用；受鉴权保护 |
 
-## 实现状态（v0.1 脚手架）
+鉴权接口只接受无浏览器 Origin 的本机服务调用，使用 `KB_ENGINE_RUNTIME_TOKEN` 的 Bearer token。外壳不能把这些接口或解析后的凭据转发到浏览器。登记投影只接受白名单元数据，API key 不写入 EngineStore、任务记录或日志。
 
-调试台与 API 面全通；管道内部为 stub，每个 stub 标注了接线阶段：
+## 真实运行与恢复边界
 
-1. **阶段 1 · 拆检索**：`/api/search|ask` 接真 BM25 + 向量运行时（从 project-knowledge 的 `knowledge-tool-runtime` 迁移），shell 的 `/api/knowledge/*` 改透明反代——MCP、CLI 零改动。
-2. **阶段 2 · 拆触发**：`/api/runs` 背后接 CommitReconciler + 无头 Agent SDK + staging 校验晋升（含 `KB_AUTOMATION_FAKE_CLAUDE`、超时语义、启动对账）；shell `/api/hooks/post-commit` 变转发。
-3. **阶段 3 · journal 原生入口**：向 event-bridge 注册为 consumer，自行 drain commit boundary 与会话事件（替换本地事件 store 与游标）。
-4. **阶段 4 · 收编**：`_supervisedSpecs` 条目 + `vendor-manifest.json` + `release:verify` 对 vendored runtime 的门禁。
+- journal 游标按来源隔离；证据投影及可恢复任务先落盘，再 ACK。不等待模型才能消费下一条事件。
+- 不同项目最多并发 2 个分析，同项目按提交顺序执行。未晋升的失败提交会阻挡本项目后续提交，不阻挡其他项目。
+- 无头分析在隔离进程中运行，只读冻结证据，只写本次 staging。产物必须通过路径、内容 hash 和依据校验，只有晋升路径写最终项目知识。
+- 归档对话和检索内容只作证据，不能覆盖后台维护指令。SDK 返回成功文字但未生成 manifest 时，记录 `ANALYSIS_OUTPUT_MISSING` 并保留证据供重试，不误报晋升完成。
+- 数据目录有单实例租约，目标知识目录有写入锁。关闭或超时等待子进程实际退出，再释放写入锁。
+- 晋升与索引分别记录。索引失败保留已晋升知识并显示待修复，不重新调用模型。
+- 项目、领域、智脑检索使用包含范围。向量只提供排序，显示内容必须来自当前真实文件；索引不可用时降级为文件检索。
+- 候选必须有已晋升文件中的引用依据，未确认候选不能进入任务。确认记录原子持久化后写共享记忆文件，派生索引异步更新，索引失败不会撤销有效记忆。
+- 旧脚手架演示状态先备份，不显示成真实项目。损坏的正式状态不覆盖、不清空。
+
+## 验证与尚未验收项
+
+`npm test` 覆盖真实 Git/Hook、真实分项目 journal、真实 vector-hub 文件索引、晋升、重复抑制、FIFO/并发、记忆、迁移及进程隔离。自动测试中的模型和 embedding 是可控替身。
+
+`npm run test:web` 使用兄弟源码仓库启动隔离的五服务网页环境，只有模型与 embedding 是替身。单一 1920×1080 视口验证双目录 UI 导入、真实 Hook 到自动刷新、原生消息流与中止、快速项目切换/草稿/历史、迟到检索及文件响应、领域检索、记忆落盘、四 iframe 身份与主题、唯一进度连接、诊断关闭和保留数据解绑；不会在用户代码仓库提交。该脚本是开发验收工具，不属于引擎生产运行依赖。
+
+`npm run test:web:faults` 从真实网页重试模型超时和索引失败，验证同项目 FIFO 恢复、不同项目继续运行、非法产物不写最终知识、浏览器离线时后台仍完成维护、恢复连接后自动恢复快照及唯一订阅，并检查私有接口鉴权及公开状态不含测试凭据。故障注入只存在于明确启用的验收替身，不进入生产管道。
+
+`test/support/product-preview.js` 提供隔离的四模块加外壳验收环境，绝不使用用户代码仓库进行测试提交。显式设置 `KB_ACCEPTANCE_REAL_PROFILE_ID` 才会从本机 Workbench 只读复制所选模型配置；`real-agent-acceptance.js` 验证真实模型提交和并发，并保留失败记录。默认 embedding 是替身；`KB_ACCEPTANCE_REAL_EMBEDDING=1` 才会只读复制实际向量供应商配置，`verify-real-embedding.js` 检查实际向量维度、语义查询及来源。
+
+已完成真实 MiniMax-M3 分析、单项目提交、双项目并发、知识晋升、真实 embo-01 索引/检索，以及原生工作台流式回答和引用抽测。`verify-real-capture.js` 另检查实际工作台输入/最终回答经过鉴权 bridge 进入提交归档和引擎冻结证据，不把注入的上下文伪装成用户输入。
+
+本地 npm 候选包已在隔离安装目录启动四模块，校验包内 UI 与运行文件，不依赖兄弟源码仓库。本轮按用户确认仅交付网页版本，Windows 安装包、安装器和桌面自动更新不在实施或验收范围内。新版外壳完整回归与五服务网页核心验收已通过；剩余故障组合及最终切换验收单独记录。远程发布及 Git 跟踪门禁也单独记录，不以工作树校验代替发布通过。此前使用替身 embedding 的真实模型记录，与本轮真实模型加真实 embedding 记录分别保存。详见 [实施与验收记录](docs/unified-product-implementation.md)，不得据此宣称五仓库改造已全部交付。

@@ -1,0 +1,23 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { EngineStore } = require('../src/store');
+test('project retries preserve language and existing baselines while adding the newly connected journal baseline', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-registration-'));
+  const store = new EngineStore(path.join(root, 'engine'));
+  const registration = { projectId: 'project-a', repoPath: path.join(root, 'code'), knowledgePath: path.join(root, 'knowledge'), knowledgeLanguage: 'en-US', conversationBaselineCursor: 44 };
+  store.addProject(registration);
+  const journalId = `sha256:${'a'.repeat(64)}`;
+  store.addProject({ ...registration, knowledgeLanguage: undefined, journalId, conversationBaselineCursors: { global: 999, [journalId]: 9 } });
+  assert.equal(store.getProject('project-a').knowledgeLanguage, 'en-US');
+  assert.equal(store.getProject('project-a').runtime.conversationBaselineCursor, 44);
+  assert.deepEqual(store.getProject('project-a').runtime.conversationBaselineCursors, { global: 44, [journalId]: 9 });
+  store.addProject({ ...registration, knowledgeLanguage: 'zh-CN', conversationBaselineCursors: { [journalId]: 999 } });
+  assert.equal(store.getProject('project-a').runtime.conversationBaselineCursors[journalId], 9);
+  assert.equal(store.getProject('project-a').knowledgeLanguage, 'zh-CN');
+  assert.throws(() => store.addProject({ ...registration, knowledgeLanguage: 'invalid' }), { code: 'INVALID_ARGUMENT' });
+  assert.equal(new EngineStore(path.join(root, 'engine')).getProject('project-a').knowledgeLanguage, 'zh-CN');
+});

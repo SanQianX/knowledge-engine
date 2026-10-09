@@ -2,26 +2,53 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const { validateProjectId } = require('./runtime/contracts');
+const { RuntimeLayout } = require('./runtime/layout');
 
 /**
  * 单文件 JSON 状态层（<data>/engine-state.json）：注册项目、分析运行、事件流。
- * 脚手架阶段整文件读写即可；接真管道后（reconciler 认领 / journal 消费游标）
- * 各自落盘，本类只保留同形 API 作兼容层。
+ * 任务、消费游标与受控写入元数据一起原子落盘，运行期凭据不进入本层。
  */
 class EngineStore {
-  constructor(dataDir) {
+  constructor(dataDir, options = {}) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'engine-state.json');
-    this.state = { projects: [], runs: [], events: [], cursor: 0 };
-    this.load();
+    this.state = { schemaVersion: 2, projects: [], runs: [], events: [], cursor: 0, journalCursors: {}, memories: [], sharedScopes: [] };
+    if (!options.deferLoad) this.load();
   }
 
   load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (raw && (raw.schemaVersion === undefined || raw.schemaVersion === 1)) {
+        const backup = path.join(this.dataDir, `legacy-debug-state-${crypto.randomUUID()}.json`);
+        require('./runtime/atomic-file').writeJsonAtomic(backup, raw);
+        this.state.legacyStateBackup = backup;
+        this.save();
+        return;
+      }
+      if (raw?.schemaVersion !== 2) throw new Error('Unsupported engine state');
+      if (!raw || !Array.isArray(raw.projects) || !Array.isArray(raw.runs) || !Array.isArray(raw.events) || !Number.isSafeInteger(raw.cursor) || raw.cursor < 0) throw new Error('Invalid engine state');
+      if (raw.memories && !Array.isArray(raw.memories) || raw.sharedScopes && !Array.isArray(raw.sharedScopes) || raw.journalCursors && (typeof raw.journalCursors !== 'object' || Array.isArray(raw.journalCursors))) throw new Error('Invalid engine projections');
+      const ids = new Set();
+      for (const project of raw.projects) {
+        validateProjectId(project.projectId);
+        if (ids.has(project.projectId) || !path.isAbsolute(project.repoPath || '') || !path.isAbsolute(project.knowledgePath || '') || !project.runtime?.analysis || !project.runtime?.index) throw new Error('Invalid project runtime');
+        ids.add(project.projectId);
+      }
+      const runIds = new Set();
+      for (const run of raw.runs) {
+        validateProjectId(run.projectId);
+        if (!/^run-[a-f0-9-]{36}$/.test(run.runId || '') || runIds.has(run.runId) || !/^[a-f0-9]{40}$/.test(run.commitSha || '') || !['queued', 'running', 'failed', 'succeeded', 'index-pending'].includes(run.state) || !Number.isSafeInteger(run.sequence) || run.sequence < 1) throw new Error('Invalid queued run');
+        runIds.add(run.runId);
+      }
+      for (const [journalId, sequence] of Object.entries(raw.journalCursors || {})) if (!/^(global|sha256:[a-f0-9]{64})$/.test(journalId) || !Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid journal cursor');
+      for (const scope of raw.sharedScopes || []) if (!scope || !['brain', 'domain'].includes(scope.kind) || !path.isAbsolute(scope.knowledgePath || '')) throw new Error('Invalid shared scope');
+      for (const memory of raw.memories || []) if (!memory || !['candidate', 'confirmed', 'ignored'].includes(memory.status) || typeof memory.text !== 'string' || !memory.evidence?.projectId || !/^[a-f0-9]{40}$/.test(memory.evidence.commitSha || '')) throw new Error('Invalid memory record');
       this.state = { ...this.state, ...raw };
-    } catch {
-      // 首次启动或文件缺失：保持空状态，由 server 决定是否灌入 seed。
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw Object.assign(new Error('引擎状态损坏，已保留原文件；请从备份恢复。'), { code: 'DATA_CORRUPT', cause: error });
     }
   }
 
@@ -37,7 +64,9 @@ class EngineStore {
   save() {
     fs.mkdirSync(this.dataDir, { recursive: true });
     const tmp = this.file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), 'utf8');
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(this.state, null, 2), 'utf8'); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     fs.renameSync(tmp, this.file);
   }
 
@@ -50,17 +79,45 @@ class EngineStore {
   }
 
   addProject(input) {
+    validateProjectId(input.projectId);
+    const layout = new RuntimeLayout(this.dataDir);
+    if (!path.isAbsolute(input.repoPath || '') || !path.isAbsolute(input.knowledgePath || '')) throw Object.assign(new Error('代码目录和知识目录必须为绝对路径。'), { status: 400, code: 'INVALID_ARGUMENT' });
     const existing = this.getProject(input.projectId);
+    if (input.knowledgeLanguage !== undefined && !['zh-CN', 'en-US'].includes(input.knowledgeLanguage)) throw Object.assign(new Error('知识语言无效。'), { status: 400, code: 'INVALID_ARGUMENT' });
+    if (this.state.runs.some(r => r.projectId === input.projectId && ['queued', 'running'].includes(r.state)) && existing
+      && (!layout.pathsEqual(existing.repoPath, input.repoPath) || !layout.pathsEqual(existing.knowledgePath, input.knowledgePath))) throw Object.assign(new Error('运行中不能改变目录绑定。'), { status: 409, code: 'PROJECT_BUSY' });
+    for (const project of this.state.projects) {
+      if (project.projectId !== input.projectId && (layout.isPathInside(project.knowledgePath, input.knowledgePath, { realpath: true }) || layout.isPathInside(input.knowledgePath, project.knowledgePath, { realpath: true }))) throw Object.assign(new Error('知识目录与已登记项目冲突。'), { status: 409, code: 'KNOWLEDGE_PATH_CONFLICT' });
+    }
+    for (const scope of this.state.sharedScopes) {
+      if (layout.isPathInside(scope.knowledgePath, input.knowledgePath, { realpath: true }) || layout.isPathInside(input.knowledgePath, scope.knowledgePath, { realpath: true })) throw Object.assign(new Error('项目目录不能占用共享知识目录。'), { status: 409, code: 'KNOWLEDGE_PATH_CONFLICT' });
+    }
+    // Registration is a projection, not a second settings/credential store.
+    const fields = { projectId: input.projectId, name: input.name || input.projectId, repoPath: path.resolve(input.repoPath), knowledgePath: path.resolve(input.knowledgePath), brainId: input.brainId || existing?.brainId || 'brain-default', knowledgeLanguage: input.knowledgeLanguage || existing?.knowledgeLanguage || 'zh-CN', enabled: input.enabled !== false };
+    for (const key of ['brainId', 'domainId', 'journalId', 'vectorProjectId', 'profileId', 'trackingStartCommit']) {
+      if (input[key] !== undefined) fields[key] = input[key] === null ? null : String(input[key]);
+    }
+    if (input.relatedProjectIds) fields.relatedProjectIds = input.relatedProjectIds.map(validateProjectId);
+    if (Number.isSafeInteger(input.conversationBaselineCursor)) fields.conversationBaselineCursor = input.conversationBaselineCursor;
+    if (input.conversationBaselineCursors) fields.conversationBaselineCursors = Object.fromEntries(Object.entries(input.conversationBaselineCursors).map(([id, cursor]) => {
+      if (!/^(global|sha256:[a-f0-9]{64})$/.test(id) || !Number.isSafeInteger(cursor) || cursor < 0) throw Object.assign(new Error('会话跟踪基线无效。'), { status: 400, code: 'INVALID_ARGUMENT' });
+      return [id, cursor];
+    }));
+    if (input.repoIdentity) fields.repoIdentity = Object.fromEntries(['schema', 'workspaceId', 'workspaceRoot', 'commonDir', 'remote'].map(key => [key, input.repoIdentity[key] == null ? null : String(input.repoIdentity[key])]));
     if (existing) {
-      Object.assign(existing, input, { updatedAt: new Date().toISOString() });
+      const priorBaselines = { ...(existing.runtime.conversationBaselineCursors || {}) };
+      if (!Object.hasOwn(priorBaselines, 'global')) priorBaselines.global = existing.runtime.conversationBaselineCursor ?? 0;
+      for (const [journalId, cursor] of Object.entries(fields.conversationBaselineCursors || {})) if (!Object.hasOwn(priorBaselines, journalId)) priorBaselines[journalId] = cursor;
+      existing.runtime.conversationBaselineCursors = priorBaselines;
+      delete fields.conversationBaselineCursor;
+      delete fields.conversationBaselineCursors;
+      Object.assign(existing, fields, { updatedAt: new Date().toISOString() });
       this.save();
       return { project: existing, reused: true };
     }
     const project = {
-      projectId: input.projectId,
-      name: input.name || input.projectId,
-      repoPath: input.repoPath || '',
-      knowledgePath: input.knowledgePath || '',
+      ...fields,
+      runtime: initialRuntime(input),
       lastCommitSha: null,
       lastRunAt: null,
       createdAt: new Date().toISOString(),
@@ -72,6 +129,7 @@ class EngineStore {
   }
 
   removeProject(projectId) {
+    if (this.state.runs.some(r => r.projectId === projectId && ['queued', 'running'].includes(r.state))) throw Object.assign(new Error('请等待当前维护运行结束后再解绑。'), { status: 409, code: 'PROJECT_BUSY' });
     const before = this.state.projects.length;
     this.state.projects = this.state.projects.filter(p => p.projectId !== projectId);
     this.save();
@@ -90,10 +148,13 @@ class EngineStore {
   }
 
   addRun(input) {
+    if (!/^[a-f0-9]{40}$/i.test(input.commitSha || '')) throw Object.assign(new Error('必须提供完整的真实提交 SHA。'), { status: 400, code: 'INVALID_ARGUMENT' });
+    const prior = this.state.runs.find(r => r.projectId === input.projectId && r.commitSha === input.commitSha.toLowerCase());
+    if (prior) return prior;
     const run = {
-      runId: 'run-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+      runId: 'run-' + crypto.randomUUID(),
       projectId: input.projectId,
-      commitSha: input.commitSha || fakeSha(),
+      commitSha: input.commitSha.toLowerCase(),
       trigger: input.trigger || 'manual',
       note: input.note || '',
       state: 'queued',
@@ -102,6 +163,11 @@ class EngineStore {
       durationMs: null,
       error: null,
       staging: null,
+      phase: 'queued',
+      sequence: this.state.runs.length + 1,
+      indexState: 'pending',
+      journalId: input.journalId || null,
+      journalSequence: input.journalSequence || null,
     };
     this.state.runs.push(run);
     const project = this.getProject(input.projectId);
@@ -131,6 +197,9 @@ class EngineStore {
       projectId: input.projectId || null,
       summary: input.summary || '',
       at: new Date().toISOString(),
+      runId: input.runId || null,
+      commitSha: input.commitSha || null,
+      phase: input.phase || null,
     };
     this.state.events.push(event);
     if (this.state.events.length > 500) this.state.events = this.state.events.slice(-500);
@@ -142,12 +211,29 @@ class EngineStore {
     const cap = Math.max(1, Math.min(Number(limit) || 50, 500));
     return this.state.events.slice(-cap).reverse();
   }
+
+  readRuntime(projectId) {
+    const project = this.getProject(projectId);
+    if (!project) throw Object.assign(new Error('项目未登记。'), { code: 'PROJECT_NOT_FOUND', status: 404 });
+    return structuredClone(project.runtime || initialRuntime(project));
+  }
+
+  async updateRuntime(projectId, fn) {
+    const project = this.getProject(projectId);
+    const draft = this.readRuntime(projectId);
+    const result = fn(draft);
+    if (result && typeof result.then === 'function') throw new Error('Runtime mutations must be synchronous');
+    project.runtime = draft;
+    this.save();
+    return structuredClone(draft);
+  }
+
+  setJournalCursor(journalId, sequence) {
+    this.state.journalCursors[journalId] = Math.max(this.state.journalCursors[journalId] || 0, sequence);
+    this.save();
+  }
 }
 
-function fakeSha() {
-  let hex = '';
-  for (let i = 0; i < 40; i += 1) hex += Math.floor(Math.random() * 16).toString(16);
-  return hex;
-}
+function initialRuntime(project = {}) { return { lastAnalyzedCommit: project.trackingStartCommit || null, conversationBaselineCursor: project.conversationBaselineCursor ?? null, conversationBaselineCursors: project.conversationBaselineCursors || {}, consumedRequirements: [], analysis: { status: 'idle', activeClaim: null, lastError: null }, index: { generation: 0, dirty: false, status: 'pending' } }; }
 
-module.exports = { EngineStore, fakeSha };
+module.exports = { EngineStore, initialRuntime };

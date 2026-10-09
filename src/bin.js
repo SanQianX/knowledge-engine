@@ -30,10 +30,23 @@ async function main() {
   const host = get('host') || process.env.KNOWLEDGE_ENGINE_HOST || '127.0.0.1';
   const dataDir = get('data') || process.env.KNOWLEDGE_ENGINE_DATA;
 
-  const { server } = createEngineServer({ dataDir });
+  const runtime = createEngineServer({ dataDir, managed: process.env.KB_ENGINE_MANAGED === '1', consume: process.env.KNOWLEDGE_ENGINE_CONSUME === '1', debug: process.env.KNOWLEDGE_ENGINE_DEBUG === '1', bridgeUrl: process.env.KB_EVENT_BRIDGE_URL, vectorUrl: process.env.KB_VECTOR_HUB_URL });
+  await runtime.ready;
+  const { server } = runtime;
+  let stopping = false;
+  const stop = async () => {
+    if (stopping) return; stopping = true;
+    try { await runtime.close(); process.exitCode = 0; }
+    catch (error) { console.error(`[knowledge-engine] ${error.code || 'SHUTDOWN_FAILED'}: ${error.message}`); process.exitCode = 1; }
+    // Let pending HTTP handles finish closing before Node tears down libuv.
+    // Forced process.exit during network cleanup can abort on Windows.
+    if (process.connected) process.disconnect();
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, stop);
+  process.on('message', message => { if (message?.type === 'kb:shutdown') stop(); });
   server.listen(port, host, () => {
     console.log(`[knowledge-engine] listening on http://${host}:${port}`);
   });
 }
 
-main();
+main().catch(error => { console.error(`[knowledge-engine] ${error.code || 'START_FAILED'}: ${error.message}`); process.exitCode = 1; });

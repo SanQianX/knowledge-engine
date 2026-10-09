@@ -12,11 +12,20 @@
   },
   "files": [
     "src",
-    "ui",
+    "ui/index.html",
+    "ui/app.js",
+    "ui/app.css",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SanQianX/knowledge-engine.git"
+  },
   "scripts": {
-    "start": "node src/bin.js serve"
+    "start": "node src/bin.js serve",
+    "test": "node --test test/*.test.js",
+    "test:web": "node test/support/product-web-ui-test.js",
+    "test:web:faults": "node test/support/product-web-fault-test.js"
   },
   "keywords": [
     "knowledge-base",
