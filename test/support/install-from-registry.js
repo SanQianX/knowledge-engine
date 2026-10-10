@@ -9,10 +9,12 @@ const AtomicFile = require('../../src/runtime/atomic-file');
 const registry = 'https://registry.npmjs.org/';
 const packageName = '@sanqianx/project-knowledge';
 const installedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-registry-product-'));
+const cachePath = process.env.KB_REGISTRY_ACCEPTANCE_CACHE ? path.resolve(process.env.KB_REGISTRY_ACCEPTANCE_CACHE) : path.join(installedRoot, 'npm-cache');
 AtomicFile.writeJsonAtomic(path.join(installedRoot, 'package.json'), { name: 'kb-registry-acceptance', version: '1.0.0', private: true });
 const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 function npm(args) {
-  const result = spawnSync(process.execPath, [npmCli, ...args, `--registry=${registry}`, '--cache', path.join(installedRoot, 'npm-cache')], {
+  const freshness = args[0] === 'view' ? '--prefer-online' : '--prefer-offline';
+  const result = spawnSync(process.execPath, [npmCli, ...args, `--registry=${registry}`, '--cache', cachePath, freshness], {
     cwd: installedRoot, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, NODE_PATH: '' },
   });
@@ -41,7 +43,7 @@ try {
   assert.equal(Object.keys(engine.dependencies || {}).length, 0);
   const report = {
     schema: 'project-knowledge/installed-registry/v1', registry, packageName, version: pkg.version,
-    installedRoot, core, integrityPassed: true, freshCache: true, distIntegrity: dist.integrity,
+    installedRoot, core, integrityPassed: true, freshCache: !process.env.KB_REGISTRY_ACCEPTANCE_CACHE, distIntegrity: dist.integrity,
     modules: Object.fromEntries(Object.entries(modules).map(([key, module]) => [key, { version: module.version, directory: module.directory }])),
     engineVersion: engine.version, sdk: resolve.resolve('@anthropic-ai/claude-agent-sdk'), checkedAt: new Date().toISOString(),
   };
