@@ -15,7 +15,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function main() {
   const child = spawn(process.execPath, [path.join(__dirname, 'product-preview.js')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
-    ...process.env, KB_PRODUCT_TEST_ROOT: root, KB_PRODUCT_TEST_PORT: '0', KB_ACCEPTANCE_REAL_PROFILE_ID: '', KB_ACCEPTANCE_REAL_EMBEDDING: '0', KB_ACCEPTANCE_STREAM_DELAY_MS: '1800', KB_ACCEPTANCE_DISTINCT_MEMORIES: '1',
+    ...process.env, KB_PRODUCT_TEST_ROOT: root, KB_PRODUCT_TEST_PORT: '0', KB_ACCEPTANCE_REAL_PROFILE_ID: '', KB_ACCEPTANCE_REAL_EMBEDDING: '0', KB_ACCEPTANCE_STREAM_DELAY_MS: '1800', KB_ACCEPTANCE_DISTINCT_MEMORIES: '1', KB_ACCEPTANCE_TITLELESS_OUTPUT: '1',
   } });
   let tail = ''; child.stdout.on('data', data => { tail = (tail + data).slice(-6000); }); child.stderr.on('data', data => { tail = (tail + data).slice(-6000); });
   let browser, environment;
@@ -48,6 +48,12 @@ async function main() {
     await waitFor(() => run("document.getElementById('homeContent').textContent.includes('第一个项目')"), 'true empty state');
     await click('[data-view="projects"]'); await click('#createDomain'); await fill('#domainForm input[name="name"]', '网页验收领域'); await click('#domainForm button[type="submit"]');
     await waitFor(() => run("!document.getElementById('domainDialog').open && document.getElementById('projectTree').textContent.includes('网页验收领域')"), 'domain UI feedback');
+    await run("window.__holdRoute='/api/projects/aggregated';window.dispatchEvent(new Event('online'))");
+    await waitFor(() => run('window.__heldRequests.length>0'), 'hold pre-domain registry response');
+    await click('#createDomain'); await fill('#domainForm input[name="name"]', '并发刷新验收领域'); await click('#domainForm button[type="submit"]');
+    await waitFor(() => run("!document.getElementById('domainDialog').open && document.getElementById('projectTree').textContent.includes('并发刷新验收领域')"), 'domain creation invalidates held reads');
+    await run('window.__heldRequests.splice(0).forEach(release=>release())');
+    assert.ok(await run("document.getElementById('projectTree').textContent.includes('并发刷新验收领域')"), 'late old read cannot remove the created domain');
     const projects = [];
     for (const [index, repo] of environment.repositories.entries()) {
       await click('.view.active [data-action="import"]'); await fill('#importCode', repo); await fill('#importKnowledge', path.join(environment.knowledgeRoot, `项目 ${index + 1}`));
@@ -75,7 +81,10 @@ async function main() {
     await waitFor(async () => (await api('/api/engine/runs')).runs.filter(r => r.state === 'succeeded').length === 2, 'both projects indexed', 45000);
     const runs = (await api('/api/engine/runs')).runs;
     assert.equal(runs.length, 2); assert.ok(runs.every(r => r.state === 'succeeded' && r.indexState === 'succeeded'));
-    for (const [index, project] of projects.entries()) assert.ok(fs.readFileSync(path.join(project.knowledgePath, `changes/${commits[index].sha.slice(0, 12)}.md`), 'utf8').includes(commits[index].sha));
+    for (const [index, project] of projects.entries()) {
+      const text = fs.readFileSync(path.join(project.knowledgePath, `changes/${commits[index].sha.slice(0, 12)}.md`), 'utf8');
+      assert.ok(text.includes(commits[index].sha)); assert.match(text, /^# 提交 .* 变更记录/);
+    }
     await browser.screenshot(path.join(proof, 'activity-1920-light.png'));
 
     await select(projects[0].projectId); await click('[data-view="work"]');

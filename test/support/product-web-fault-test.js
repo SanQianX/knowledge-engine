@@ -89,6 +89,22 @@ async function main() {
     await click(`.run[data-run-id="${invalidRun.runId}"] summary`); await browser.screenshot(path.join(proof, 'invalid-output-1920.png'));
     await click(`[data-retry-run="${invalidRun.runId}"]`); await waitFor(async () => (await getRun(invalidSha))?.state === 'succeeded', 'invalid output replaced through controlled retry', 30000);
 
+    const emptySha = commit(0, 'acceptance-empty-output');
+    await waitFor(async () => (await getRun(emptySha))?.state === 'failed', 'empty Markdown rejected', 30000);
+    const emptyRun = await getRun(emptySha); assert.equal(emptyRun.error.code, 'ANALYSIS_EMPTY_DOCUMENT');
+    assert.equal(emptyRun.error.phase, 'validating');
+    assert.equal(fs.existsSync(path.join(projects[0].knowledgePath, `changes/${emptySha.slice(0, 12)}.md`)), false);
+    await waitFor(() => run("document.getElementById('activityUpdates').textContent.includes('知识文档正文为空')"), 'actual validation reason appears without reload');
+    const records = (await api(`/api/logs?projectId=${projects[0].projectId}&commitSha=${emptySha}`)).entries;
+    assert.ok(records.some(record => record.event === 'knowledge.maintenance.failed' && record.phase === 'validating' && record.error.message.includes('知识文档正文为空')));
+    await click('#openSystem'); await click('#openLogs');
+    await fill('#logsSearch', emptySha); await click('#loadLogs');
+    await waitFor(() => run("document.getElementById('logsContent').textContent.includes('knowledge.maintenance.failed')"), 'diagnostic dialog contains maintenance failure');
+    await browser.screenshot(path.join(proof, 'empty-output-diagnostics-1920.png'));
+    await run("document.getElementById('logsDialog').close()");
+    await click(`.run[data-run-id="${emptyRun.runId}"] summary`); await click(`[data-retry-run="${emptyRun.runId}"]`);
+    await waitFor(async () => (await getRun(emptySha))?.state === 'succeeded', 'empty output explicit retry succeeds', 30000);
+
     await select(projects[1].projectId);
     await browser.send('Network.enable');
     await browser.send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });

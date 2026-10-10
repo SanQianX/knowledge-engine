@@ -14,6 +14,11 @@ async function main() {
   assert.ok(/^(kb-installed-product-|kb-registry-product-)/.test(path.basename(installation.installedRoot)));
   const root = path.join(installation.installedRoot, 'acceptance-data');
   fs.mkdirSync(root, { recursive: true });
+  const claudeFixture = process.argv.includes('--verify-claude') ? path.join(root, 'Claude 入口验收', 'cli.cjs') : null;
+  if (claudeFixture) {
+    AtomicFile.writeFileAtomic(claudeFixture, "require('./removed-cli.js')\n");
+    process.env.CLAUDE_CODE_EXECPATH = claudeFixture;
+  }
   const [terminal, vector, events, engine] = await Promise.all(Array.from({ length: 4 }, freePort));
   Object.assign(process.env, {
     KB_DATA_DIR: path.join(root, 'shell'), KB_MODULES_AUTOSTART: '1', KB_MODULES_REGISTER: '1',
@@ -47,6 +52,25 @@ async function main() {
   const progress = { schema: 'project-knowledge/installed-startup/v1', installationSource: installation.schema, mode: 'real installed modules; no Agent request during startup', url, installedRoot: installation.installedRoot, core: installation.core, integrityPassed: true, modules: Object.fromEntries(Object.entries(health).map(([key, value]) => [key, { up: value.up, url: value.url }])), emptyState: snapshot.projects.length === 0 && snapshot.runs.length === 0, registeredProjects: snapshot.projects.length, checkedAt: new Date().toISOString(), pid: process.pid };
   AtomicFile.writeJsonAtomic(path.join(root, 'installed-startup-acceptance.json'), progress);
   process.stdout.write(`INSTALLED_PRODUCT_READY ${url}\n`);
+  if (claudeFixture) {
+    const agents = await (await read('/api/terminal/agents')).json();
+    const claude = agents.agents.find(agent => agent.id === 'claude-code');
+    assert.equal(claude.available, false); assert.match(claude.reason, /Cannot find module/);
+    const failedDoctor = await (await read('/api/terminal/system/doctor')).json();
+    assert.equal(failedDoctor.agents['claude-code'].resolvedExecutable, claudeFixture);
+    assert.equal(failedDoctor.agents['claude-code'].versionProbe.ok, false);
+    await shell.runtime.logger.flush();
+    const records = (await (await read('/api/logs?q=agent.discovery.failed')).json()).entries;
+    assert.ok(records.some(record => record.component === 'claude-ai-workbench' && record.error.message.includes('Cannot find module')));
+    const directory = path.join(root, 'shell', 'logs', 'system');
+    assert.ok(fs.readdirSync(directory).some(name => fs.readFileSync(path.join(directory, name), 'utf8').includes('agent.discovery.failed')), 'supervised module error must be durable on disk');
+    AtomicFile.writeFileAtomic(claudeFixture, "console.log('Claude Code 2.1.99 regression fixture')\n");
+    const recovered = await (await read('/api/terminal/system/doctor')).json();
+    assert.equal(recovered.agents['claude-code'].versionProbe.ok, true);
+    assert.equal(recovered.agents['claude-code'].versionProbe.version, '2.1.99');
+    AtomicFile.writeJsonAtomic(path.join(root, 'installed-claude-diagnostics-acceptance.json'), { passed: true, moduleVersion: installation.modules.terminal.version, resolvedExecutable: claudeFixture, brokenEntryReported: true, durableProductLog: true, realNodeVersionProbe: true, agentCalls: 'none; CLI fixture only', checkedAt: new Date().toISOString() });
+    process.stdout.write('INSTALLED_CLAUDE_DIAGNOSTICS_PASSED (real supervised module, IPC, HTTP, disk and Node; CLI fixture)\n');
+  }
   if (process.argv.includes('--verify-restart')) {
     const originalChildren = [...shell.runtime.moduleBridge.supervised];
     assert.equal(originalChildren.length, 4, 'restart verification owns only its isolated module processes');

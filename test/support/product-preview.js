@@ -23,6 +23,8 @@ const { createConsoleServer } = require(path.join(bridgePackage, 'src/server'));
 const { BridgeAdapter } = require(path.join(shellPackage, '_site/lib/bridge-adapter'));
 const { ModuleBridge } = require(path.join(shellPackage, '_site/lib/module-bridge'));
 const { createRuntime, startServer } = require(path.join(shellPackage, '_site/lib/server-app'));
+const { Logger } = require(path.join(shellPackage, '_site/lib/structured-logger'));
+const { StorageLayout } = require(path.join(shellPackage, '_site/lib/storage-layout'));
 const { createWorkbenchServer } = require(path.join(workbenchPackage, 'packages/server'));
 const { ProfileStore } = require(path.join(workbenchPackage, 'packages/server/lib/profile-store'));
 const { createFakeRunner } = require(path.join(family, 'claude-ai-workbench', 'tests/helpers/fake-runner'));
@@ -43,6 +45,7 @@ async function main() {
   const token = crypto.randomBytes(32).toString('hex');
   process.env.KB_MODULES_AUTOSTART = '0'; process.env.KB_MODULES_REGISTER = '1';
   process.env.KB_DATA_DIR = path.join(root, 'shell');
+  const productLogger = new Logger({ layout: new StorageLayout({ dataDir: process.env.KB_DATA_DIR }) });
   process.env.AI_CODING_EVENT_BRIDGE_HOME = path.join(root, 'events');
   process.env.AI_CODING_EVENT_BRIDGE_MODULE = path.join(bridgePackage, 'src/bridge');
   const repositories = [];
@@ -68,12 +71,14 @@ async function main() {
     }
     vectorHandler(req, res);
   }); await listen(vectors);
-  const engine = createEngineServer({ dataDir: path.join(root, 'engine'), managed: true, runtimeToken: token, bridgeUrl: url(events), vectorUrl: url(vectors), ...(realProfile ? {} : { analyzer: { async runClaim(input) {
+  const engine = createEngineServer({ dataDir: path.join(root, 'engine'), logger: productLogger, managed: true, runtimeToken: token, bridgeUrl: url(events), vectorUrl: url(vectors), ...(realProfile ? {} : { analyzer: { async runClaim(input) {
     await new Promise(resolve => setTimeout(resolve, 1500));
+    let emptyOutput = false;
     if (faultScenarios) {
       const sha = input.claim.commitSha;
       observations.attempts[sha] = (observations.attempts[sha] || 0) + 1; recordFaults();
       const subject = execFileSync('git', ['show', '-s', '--format=%s', sha], { cwd: input.config.repoPath, windowsHide: true, encoding: 'utf8' });
+      emptyOutput = observations.attempts[sha] === 1 && subject.includes('acceptance-empty-output');
       if (observations.attempts[sha] === 1 && subject.includes('acceptance-timeout')) throw Object.assign(new Error('Controlled model timeout'), { code: 'MODEL_TIMEOUT', retryable: true });
       if (observations.attempts[sha] === 1 && subject.includes('acceptance-invalid')) {
         AtomicFile.writeJsonAtomic(input.manifestPath, { schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: sha, operations: [{ operation: 'create', path: '../outside.md' }] }); return;
@@ -81,7 +86,8 @@ async function main() {
     }
     const relative = `changes/${input.claim.commitSha.slice(0, 12)}.md`;
     const memoryText = process.env.KB_ACCEPTANCE_DISTINCT_MEMORIES === '1' ? `项目 ${input.projectId} 的维护偏好：保持功能简单，复用成熟消息流。` : '功能保持简单，复用成熟消息流。';
-    const content = `# ${input.claim.commitSha} · 知识写入边界\n\n知识由引擎的晋升路径作为单写者维护，提交依据：${input.claim.commitSha}。\n\n用户要求：${memoryText}\n`;
+    const title = process.env.KB_ACCEPTANCE_TITLELESS_OUTPUT === '1' ? '' : `# ${input.claim.commitSha} · 知识写入边界\n\n`;
+    const content = emptyOutput ? ' \n\t' : `${title}知识由引擎的晋升路径作为单写者维护，提交依据：${input.claim.commitSha}。\n\n用户要求：${memoryText}\n`;
     AtomicFile.writeFileAtomic(path.join(input.stagingPath, 'files', relative), content);
     AtomicFile.writeJsonAtomic(input.manifestPath, { schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, operations: [{ path: relative, operation: 'create', reason: 'Controlled model acceptance output', sha256: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, evidenceReferences: [`commit:${input.claim.commitSha}`, `patch:${input.claim.patchHash}`, `conversation:${input.claim.conversationSnapshotHash}`, `retrieval:${input.claim.retrievalManifestHash}`] }], memoryCandidates: [{ text: memoryText, entryId: relative, quote: memoryText }] });
   } } }) }); await engine.ready; await listen(engine.server);
@@ -90,7 +96,7 @@ async function main() {
   workbench.profiles.setCredential('acceptance-model', realProfile?.apiKey || 'controlled-agent-not-real'); workbench.profiles.setMaintenanceDefault('acceptance-model'); await listen(workbench.server);
   if (realEmbeddingSettings) workbench.profiles.setEmbeddingConfig({ provider: realEmbeddingSettings.provider, model: realEmbeddingSettings.model, endpoint: realEmbeddingSettings.endpoint, secret: realEmbeddingSettings.apiKey });
   else if (!workbench.profiles.embeddingConfig().configured) workbench.profiles.setEmbeddingConfig({ provider: 'minimax', model: 'controlled-embedding', secret: 'controlled-embedding-not-real' });
-  const shellRuntime = createRuntime({ dataDir: process.env.KB_DATA_DIR, analysisOwner: 'engine', bridgeAdapter: new BridgeAdapter({ dataDir: process.env.KB_DATA_DIR, modulePath: process.env.AI_CODING_EVENT_BRIDGE_MODULE }) });
+  const shellRuntime = createRuntime({ dataDir: process.env.KB_DATA_DIR, logger: productLogger, analysisOwner: 'engine', bridgeAdapter: new BridgeAdapter({ dataDir: process.env.KB_DATA_DIR, modulePath: process.env.AI_CODING_EVENT_BRIDGE_MODULE }) });
   await shellRuntime.settingsStore.initialize({ knowledge: { rootPath: path.join(root, 'knowledge') } });
   await shellRuntime.registryStore.initialize();
   shellRuntime.moduleBridge = new ModuleBridge({ dataDir: process.env.KB_DATA_DIR, settingsStore: shellRuntime.settingsStore, registryStore: shellRuntime.registryStore, projectStore: shellRuntime.projectStore, logger: shellRuntime.logger, runtimeToken: token, terminalUrl: url(workbench.server), vectorHubUrl: url(vectors), eventBridgeUrl: url(events), engineUrl: url(engine.server) });
