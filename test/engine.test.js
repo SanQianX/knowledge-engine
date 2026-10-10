@@ -35,12 +35,12 @@ async function eventually(fn, timeout = 12000) {
   while (Date.now() < until) { if (await fn()) return; await new Promise(resolve => setTimeout(resolve, 20)); }
   throw new Error('Condition timed out');
 }
-function analyzer({ delay = 0, events = [] } = {}) {
+function analyzer({ delay = 0, events = [], markdown } = {}) {
   return { async runClaim(input) {
     events.push({ kind: 'start', projectId: input.projectId, sha: input.claim.commitSha, at: Date.now() });
     if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     const relative = `changes/${input.claim.commitSha.slice(0, 12)}.md`;
-    const content = `# Verified maintenance ${input.projectId}\n\nCommit ${input.claim.commitSha} implements feature.\n`;
+    const content = markdown === undefined ? `# Verified maintenance ${input.projectId}\n\nCommit ${input.claim.commitSha} implements feature.\n` : markdown;
     AtomicFile.writeFileAtomic(path.join(input.stagingPath, 'files', relative), content);
     AtomicFile.writeJsonAtomic(input.manifestPath, { schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, operations: [{ path: relative, operation: 'create', sha256: `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`, reason: 'Frozen Git evidence', evidenceReferences: [`commit:${input.claim.commitSha}`, `patch:${input.claim.patchHash}`, `conversation:${input.claim.conversationSnapshotHash}`, `retrieval:${input.claim.retrievalManifestHash}`] }] });
     events.push({ kind: 'finish', projectId: input.projectId, sha: input.claim.commitSha, at: Date.now() });
@@ -126,6 +126,28 @@ test('index failure retains promoted files and reports a separate repair state',
     assert.equal(runtime.store.readRuntime(p.projectId).lastAnalyzedCommit, p.commitSha);
     assert.ok(fs.existsSync(path.join(p.knowledgePath, 'changes', `${p.commitSha.slice(0, 12)}.md`)));
   } finally { await runtime.close(); await vector.close(); }
+});
+
+test('zero-document first commit normalizes its title and becomes indexed, empty output preserves exact failure', async () => {
+  const vector = await vectorServer(); const root = directory();
+  const runtime = await start({ vectorUrl: vector.url, analyzer: analyzer({ markdown: '## 更新说明\n\n本次冻结提交添加了 feature 文件。\n' }) });
+  try {
+    const p = project(root, 'empty'); assert.deepEqual(fs.readdirSync(p.knowledgePath), []); runtime.store.addProject(p);
+    const run = runtime.coordinator.enqueue({ projectId: p.projectId, commitSha: p.commitSha });
+    await eventually(() => run.state === 'succeeded');
+    assert.match(fs.readFileSync(path.join(p.knowledgePath, 'changes', `${p.commitSha.slice(0, 12)}.md`), 'utf8'), /^# 提交/);
+    assert.equal(run.indexState, 'succeeded');
+    runtime.coordinator.analyzer = analyzer({ markdown: ' \n' });
+    const other = project(root, 'blank'); runtime.store.addProject(other);
+    const failed = runtime.coordinator.enqueue({ projectId: other.projectId, commitSha: other.commitSha });
+    await eventually(() => failed.state === 'failed');
+    assert.equal(failed.error.code, 'ANALYSIS_EMPTY_DOCUMENT'); assert.equal(failed.error.phase, 'validating'); assert.match(failed.error.message, /正文为空/);
+    assert.deepEqual(fs.readdirSync(other.knowledgePath), []); assert.equal(runtime.store.readRuntime(other.projectId).lastAnalyzedCommit, other.trackingStartCommit);
+    const logDir = path.join(runtime.store.dataDir, 'logs', 'projects', other.projectId);
+    const records = fs.readFileSync(path.join(logDir, fs.readdirSync(logDir)[0]), 'utf8').trim().split('\n').map(JSON.parse);
+    assert(records.some(record => record.event === 'knowledge.maintenance.failed' && record.commitSha === other.commitSha && record.error.message.includes('正文为空')));
+    const response = await runtime.call(`/api/runs/${failed.runId}`); assert.match(response.body.run.error.message, /正文为空/);
+  } finally { await runtime.close(); await vector.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('failed earlier commit blocks only its project; retry restores FIFO order', async () => {

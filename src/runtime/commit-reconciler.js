@@ -23,7 +23,7 @@ function publicFailure(error, phase) {
   return {
     code: error && error.code || 'INVALID_ARGUMENT',
     message: String(error && error.message || 'Commit reconciliation failed.'),
-    phase,
+    phase: error && error.phase || phase,
     retryable: error && error.retryable === true,
     ts: new Date().toISOString(),
   };

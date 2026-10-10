@@ -11,7 +11,7 @@ const { ANALYSIS_SYSTEM_INSTRUCTIONS, frameFrozenEvidence, requireAnalysisOutput
 
 function input() {
   const stagingPath = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-worker-'));
-  return { projectId: 'project-worker', claim: { commitSha: 'a'.repeat(40) }, stagingPath, evidenceRoot: stagingPath, manifestPath: path.join(stagingPath, 'manifest.json'), prompt: 'controlled test', safetyPolicy: {} };
+  return { projectId: 'project-worker', claim: { runId: 'run-worker', commitSha: 'a'.repeat(40) }, stagingPath, evidenceRoot: stagingPath, manifestPath: path.join(stagingPath, 'manifest.json'), prompt: 'controlled test', safetyPolicy: {} };
 }
 function stopped(job) { const pid = Number(fs.readFileSync(path.join(job.stagingPath, 'worker.pid'), 'utf8')); assert.throws(() => process.kill(pid, 0), 'worker must actually exit before releasing the run'); }
 test('worker completion, timeout and shutdown wait for actual process exit', async () => {

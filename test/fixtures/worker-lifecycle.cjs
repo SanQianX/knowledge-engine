@@ -8,8 +8,8 @@ process.once('message', job => {
   if (job.profile.mainModel === 'hang') return;
   if (job.profile.mainModel === 'no-output') { process.send({ type: 'complete' }); return; }
   fs.mkdirSync(path.join(job.stagingPath, 'files'));
-  fs.writeFileSync(path.join(job.stagingPath, 'files', 'README.md'), '# Isolated test worker\n');
-  fs.writeFileSync(path.join(job.stagingPath, 'manifest.json'), JSON.stringify({ operations: [{ operation: 'create', path: 'README.md' }] }));
+  fs.writeFileSync(path.join(job.stagingPath, 'files', 'README.md'), '# Isolated test worker\n\nControlled evidence-backed test output.\n');
+  fs.writeFileSync(path.join(job.stagingPath, 'manifest.json'), JSON.stringify({ schema: 'knowledge-staging-manifest/v1', projectId: job.projectId, runId: job.runId, commitSha: job.commitSha, operations: [{ operation: 'create', path: 'README.md' }] }));
   process.send({ type: 'complete' });
 });
 setInterval(() => {}, 1000);

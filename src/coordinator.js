@@ -13,6 +13,8 @@ const { BridgeClient } = require('./bridge-client');
 const { HeadlessAnalyzer } = require('./headless-analyzer');
 const { MemoryService } = require('./memories');
 const { execGit } = require('./runtime/git-runner');
+const { createDiagnostics } = require('./diagnostics');
+const { finalizeAnalysisOutput } = require('./analysis-output');
 
 class EngineCoordinator extends EventEmitter {
   constructor(store, options = {}) {
@@ -28,6 +30,9 @@ class EngineCoordinator extends EventEmitter {
     this.jobs = new Set();
     this.initializeHook = options.initializeHook;
     this.profiles = new Map();
+    const diagnostics = createDiagnostics({ dataDir: store.dataDir, secrets: () => [...this.profiles.values()].flatMap(profile => [profile.apiKey, profile.authToken]) });
+    this.diagnostics = options.logger || diagnostics;
+    this.safeMessage = diagnostics.sanitize;
     this.closed = false;
     this.sharedIndexJobs = new Map();
     this.sharedIndexDirty = new Set();
@@ -43,17 +48,19 @@ class EngineCoordinator extends EventEmitter {
     this.retrieval = new EngineRetrieval({ layout: this.layout, projectStore: this.projectStore, registryStore, store, memories: this.memories, vectorUrl: this.vectorUrl });
     this.conversations = new ConversationStore({ layout: this.layout, projectStore: this.projectStore });
     this.analyzer = options.analyzer || new HeadlessAnalyzer({ resolveProfile: id => this.profiles.get(id) || this.profiles.get('default'), timeoutMs: options.timeoutMs });
-    this.promotion = new KnowledgePromotionService({ layout: this.layout, projectStore: this.projectStore, analyzer: { runClaim: async input => {
+    this.promotion = new KnowledgePromotionService({ layout: this.layout, logger: this.diagnostics, projectStore: this.projectStore, analyzer: { runClaim: async input => {
       const run = this.currentRun(input.projectId);
       store.updateRun(run.runId, { analysisRunId: input.claim.runId, phase: 'analyzing' });
       this.notify(run, '正在分析冻结的提交证据');
       if (run.debugFailure) throw Object.assign(new Error('调试模式：模拟分析失败。'), { code: 'DEBUG_SIMULATED_FAILURE', retryable: true });
       await this.analyzer.runClaim(input);
+      const normalized = finalizeAnalysisOutput(input);
+      if (normalized.length) await this.diagnostics.info('knowledge.output.normalized', '已为非空知识文档补齐一级标题。', { projectId: run.projectId, runId: run.runId, commitSha: run.commitSha, phase: 'validating', context: { files: normalized } });
       store.updateRun(run.runId, { phase: 'promoting' });
       this.notify(run, '校验并晋升知识');
       return { ok: true };
     } } });
-    this.reconciler = new CommitReconciler({ layout: this.layout, projectStore: this.projectStore, registryStore, conversationStore: this.conversations, retrievalService: this.retrieval, claimProcessor: this.promotion });
+    this.reconciler = new CommitReconciler({ layout: this.layout, logger: this.diagnostics, projectStore: this.projectStore, registryStore, conversationStore: this.conversations, retrievalService: this.retrieval, claimProcessor: this.promotion });
     this.ready = this.initialize();
   }
   currentRun(id) { return this.store.getRun(this.active.get(id)); }
@@ -182,8 +189,10 @@ class EngineCoordinator extends EventEmitter {
       this.notify(run, '知识已晋升，正在更新索引');
       await this.index(run);
     } catch (error) {
-      const message = error.code === 'AI_PROFILE_REQUIRED' ? '请配置后台默认模型。' : error.code === 'ANALYSIS_OUTPUT_MISSING' ? 'Agent 未生成知识维护文件，证据与原知识已保留，可重试。' : '知识维护失败，证据与原知识已保留。';
-      this.store.updateRun(run.runId, { state: 'failed', phase: 'failed', finishedAt: new Date().toISOString(), error: { code: error.code || 'ANALYSIS_FAILED', message, retryable: error.retryable === true } });
+      const failedPhase = error.phase || this.store.getRun(run.runId).phase;
+      const message = this.safeMessage(error.message || '知识维护失败，证据与原知识已保留。');
+      await this.diagnostics.error('knowledge.maintenance.failed', '知识维护失败，证据与原知识已保留。', { projectId: run.projectId, runId: run.runId, operationId: run.runId, commitSha: run.commitSha, phase: failedPhase, error });
+      this.store.updateRun(run.runId, { state: 'failed', phase: 'failed', finishedAt: new Date().toISOString(), error: { code: error.code || 'ANALYSIS_FAILED', message, phase: failedPhase, retryable: error.retryable === true } });
       this.notify(run, '知识维护失败');
     }
   }
@@ -256,6 +265,7 @@ class EngineCoordinator extends EventEmitter {
     // A consumer may still be persisting evidence or an ACK. Keep the writer
     // lease until that work settles; the next process must never overlap it.
     await Promise.all([this.drainJob, ...this.jobs, ...this.sharedIndexJobs.values()]);
+    await this.diagnostics.close?.();
     this.removeAllListeners(); this.profiles.clear();
   }
 }
