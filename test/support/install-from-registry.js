@@ -13,8 +13,7 @@ const cachePath = process.env.KB_REGISTRY_ACCEPTANCE_CACHE ? path.resolve(proces
 AtomicFile.writeJsonAtomic(path.join(installedRoot, 'package.json'), { name: 'kb-registry-acceptance', version: '1.0.0', private: true });
 const npmCli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 function npm(args) {
-  const freshness = args[0] === 'view' ? '--prefer-online' : '--prefer-offline';
-  const result = spawnSync(process.execPath, [npmCli, ...args, `--registry=${registry}`, '--cache', cachePath, freshness], {
+  const result = spawnSync(process.execPath, [npmCli, ...args, `--registry=${registry}`, '--cache', cachePath, '--prefer-online'], {
     cwd: installedRoot, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024,
     env: { ...process.env, NODE_PATH: '' },
   });
@@ -26,7 +25,7 @@ try {
   assert.match(expected || '', /^\d+\.\d+\.\d+$/);
   const latest = npm(['view', packageName, 'dist-tags.latest']).trim();
   assert.equal(latest, expected, 'latest must point to the release before acceptance');
-  npm(['install', '--prefix', installedRoot, '--global=false', '--save-exact', '--no-audit', '--no-fund', `${packageName}@latest`]);
+  npm(['install', '--prefix', installedRoot, '--global=false', '--save-exact', '--no-audit', '--no-fund', `${packageName}@${expected}`, '--prefer-online']);
   const core = path.join(installedRoot, 'node_modules', '@sanqianx', 'project-knowledge');
   const pkg = JSON.parse(fs.readFileSync(path.join(core, 'package.json')));
   assert.equal(pkg.version, expected);
