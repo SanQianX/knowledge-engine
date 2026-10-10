@@ -38,6 +38,8 @@ async function main() {
   if (realProfile) process.env.NODE_PATH = installation ? [path.join(shellPackage, 'node_modules'), path.join(installation.installedRoot, 'node_modules')].join(path.delimiter) : [path.join(family, 'claude-ai-workbench', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
   const root = process.env.KB_PRODUCT_TEST_ROOT ? path.resolve(process.env.KB_PRODUCT_TEST_ROOT) : fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
   if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('智脑桌面验收-')) throw new Error('Acceptance root must be its own temporary directory');
+  // Real tests must not silently inherit unrelated user plugins or their memories.
+  if (realProfile) process.env.CLAUDE_CONFIG_DIR = path.join(root, 'agent-config');
   const token = crypto.randomBytes(32).toString('hex');
   process.env.KB_MODULES_AUTOSTART = '0'; process.env.KB_MODULES_REGISTER = '1';
   process.env.KB_DATA_DIR = path.join(root, 'shell');

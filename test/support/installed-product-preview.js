@@ -34,6 +34,11 @@ async function main() {
   while (Date.now() < deadline && !Object.values((await (await read('/api/modules/health')).json()).modules).every(module => module.up)) await new Promise(resolve => setTimeout(resolve, 200));
   const health = (await (await read('/api/modules/health')).json()).modules;
   assert.ok(Object.values(health).every(module => module.up), 'all four installed services must start');
+  // A listening child is not yet proof that authentication and consumption are ready.
+  const configuredAtStartup = await fetch(url + '/api/modules/configure', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  assert.ok(configuredAtStartup.ok); await configuredAtStartup.json();
+  while (Date.now() < deadline && !(await (await read('/api/modules/health')).json()).ownership.ready) await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await (await read('/api/modules/health')).json()).ownership.ready, true, 'the engine must be authenticated and activated, not merely listening');
   const content = await (await read('/')).text(); assert.ok(content.includes('src="/product.js"') && !content.includes('srcdoc'));
   for (const route of ['/modules/terminal/agent-terminal/app.js', '/modules/terminal/agent-terminal/app.css', '/modules/vectorhub/', '/modules/eventbridge/', '/modules/engine/']) await read(route);
   const snapshot = await (await read('/api/engine/snapshot')).json();

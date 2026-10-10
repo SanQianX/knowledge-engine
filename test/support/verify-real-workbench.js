@@ -16,6 +16,8 @@ async function main() {
   const session = sessions.find(s => s.aiProfileId === 'acceptance-model' && s.model === 'MiniMax-M3');
   assert.ok(session, 'real selected model session must exist');
   const snapshot = await read(`/api/terminal/sessions/${session.sessionId}`);
+  const isolatedAgentConfig = process.argv.includes('--isolated');
+  if (isolatedAgentConfig) assert.ok(!JSON.stringify(snapshot.events).includes('claude-mem'), 'an isolated test must not import external plugin memories');
   const context = await read(`/api/terminal/sessions/${session.sessionId}/knowledge`);
   assert.equal(snapshot.session.state, 'idle', 'the real task must finish while its reusable session stays available');
   assert.ok(context.references.length && context.references.every(ref => ref.projectId !== 'project-real-b'));
@@ -29,7 +31,7 @@ async function main() {
   assert.ok(snapshot.events.some(e => e.type === 'claude/result' && e.isError === false), 'the real Agent must return a successful result');
   assert.equal(snapshot.events.at(-1).type, 'claude/turn-end', 'the final turn event must reach the backend snapshot');
   assert.ok(context.references.some(ref => ref.commitSha === sha));
-  const report = { mode: environment.model, installationSource: environment.installationSource, verifiedAt: new Date().toISOString(), projectId: project.projectId, sessionId: session.sessionId, model: session.model, eventCount: snapshot.events.length, deltaCount: deltas.length, citedCommit: sha, references: context.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha })), passed: true };
+  const report = { mode: environment.model, isolatedAgentConfig, installationSource: environment.installationSource, verifiedAt: new Date().toISOString(), projectId: project.projectId, sessionId: session.sessionId, model: session.model, eventCount: snapshot.events.length, deltaCount: deltas.length, citedCommit: sha, references: context.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha })), passed: true };
   AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-workbench-acceptance.json'), report);
   process.stdout.write(`REAL_WORKBENCH_ACCEPTANCE_PASSED deltas=${deltas.length}\n`);
 }

@@ -31,7 +31,7 @@ async function main() {
   const result = await response.json();
   assert.equal(result.health.index, 'ok', 'unified retrieval must actually use the real vector provider, not silently degrade');
   assert.ok(result.results.length && result.results.some(row => row.commitSha), 'engine must retain promoted commit attribution');
-  AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-embedding-acceptance.json'), { passed: true, verifiedAt: new Date().toISOString(), mode: 'real MiniMax embo-01 indexing and query; pre-existing real Agent outputs reindexed after configuration switch', dimensions, semanticResults: search.results.length, engineResults: result.results.length, citedCommits: [...new Set(result.results.map(row => row.commitSha).filter(Boolean))], secretsExposed: false });
+  AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-embedding-acceptance.json'), { passed: true, verifiedAt: new Date().toISOString(), mode: environment.model, installationSource: environment.installationSource, dimensions, semanticResults: search.results.length, engineResults: result.results.length, citedCommits: [...new Set(result.results.map(row => row.commitSha).filter(Boolean))], secretsExposed: false });
   process.stdout.write('REAL_EMBEDDING_ACCEPTANCE_PASSED dimension=1536\n');
 }
 main().catch(error => { process.stderr.write(`${error.code || 'ACCEPTANCE_FAILED'}: ${error.message}\n`); process.exitCode = 1; });
