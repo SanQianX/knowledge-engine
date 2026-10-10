@@ -102,10 +102,21 @@ async function main() {
     AtomicFile.writeJsonAtomic(path.join(root, 'installed-restart-acceptance.json'), { passed: true, restarts, projectIds: restored.projects.map(p => p.projectId), runs: restored.runs.length, checkedAt: new Date().toISOString() });
     process.stdout.write('INSTALLED_FOUR_MODULE_RESTART_PASSED\n');
   }
-  if (process.argv.includes('--verify-shutdown')) {
+  if (process.argv.includes('--verify-shutdown') || process.argv.includes('--verify-cli-stop')) {
     const children = [...shell.runtime.moduleBridge.supervised];
     assert.equal(children.length, 4, 'verification must own all four module processes');
-    await shell.stop('installed-shutdown-verification');
+    if (process.argv.includes('--verify-cli-stop')) {
+      const { spawn } = require('node:child_process');
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [path.join(installation.core, 'bin/project-knowledge.js'), 'STOP', '--port', String(shell.port)], { cwd: os.tmpdir(), env: { ...process.env, KB_DATA_DIR: path.join(root, 'different-selected-data') }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+        let stdout = '', stderr = '';
+        const timer = setTimeout(() => { child.kill(); reject(new Error('Installed CLI stop timed out')); }, 50000);
+        child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+        child.once('error', reject); child.once('exit', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+      });
+      assert.equal(result.code, 0, result.stderr); assert.ok(result.stdout.includes(`:${shell.port}`));
+      process.stdout.write('INSTALLED_UPPERCASE_TARGETED_CLI_STOP_PASSED\n');
+    } else await shell.stop('installed-shutdown-verification');
     const processExits = children.map(child => ({ pid: child.pid, exitCode: child.exitCode, signal: child.signalCode }));
     assert.ok(processExits.every(child => child.exitCode === 0 && child.signal === null), `owned services must exit normally: ${JSON.stringify(processExits)}`);
     for (const module of Object.values(health)) {
