@@ -10,7 +10,7 @@ function createDiagnostics({ dataDir, component = 'knowledge-engine', secrets = 
     let text = String(value || '');
     let values = []; try { values = secrets() || []; } catch {}
     for (const secret of values) if (typeof secret === 'string' && secret.length >= 4) text = text.split(secret).join('[REDACTED]');
-    return text.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@').replace(/\b(Bearer|Basic)\s+[^\s]+/gi, '$1 [REDACTED]').replace(/((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]').slice(0, 8000);
+    return text.replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@').replace(/\b(Bearer|Basic)\s+[^\s]+/gi, '$1 [REDACTED]').replace(/(["']?(?:api[_-]?key|auth[_-]?token|token|password|secret)["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, '$1[REDACTED]').replace(/\bsk[-_][A-Za-z0-9_-]{8,}/g, '[REDACTED]').slice(0, 8000);
   };
   const logger = { sanitize, close: async () => {} };
   for (const level of ['debug', 'info', 'warn', 'error']) logger[level] = async (event, message, input = {}) => {

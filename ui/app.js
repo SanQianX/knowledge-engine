@@ -197,7 +197,7 @@ async function showRunDetail(runId) {
   $('#runDetail').classList.remove('hidden');
   $('#runDetailId').textContent = run.runId;
   $('#runTimeline').innerHTML = runTimeline(run);
-  $('#runMeta').innerHTML = `<div><dt>状态</dt><dd>${stateBadge(run.state)}</dd></div><div><dt>项目 / commit</dt><dd>${escapeHtml(run.projectId)} · <span class="mono">${shortSha(run.commitSha)}</span></dd></div><div><dt>触发入口</dt><dd class="mono">${escapeHtml(run.trigger)}</dd></div><div><dt>错误</dt><dd>${run.error ? escapeHtml(run.error.message) : '–'}</dd></div>${run.error?.retryable ? '<div><dt>恢复</dt><dd><button class="btn" id="retryRun">重试失败阶段</button></dd></div>' : ''}`;
+  $('#runMeta').innerHTML = `<div><dt>状态</dt><dd>${stateBadge(run.state)}</dd></div><div><dt>项目 / commit</dt><dd>${escapeHtml(run.projectId)} · <span class="mono">${shortSha(run.commitSha)}</span></dd></div><div><dt>触发入口</dt><dd class="mono">${escapeHtml(run.trigger)}</dd></div><div><dt>错误</dt><dd>${run.error ? escapeHtml(run.error.message) : '–'}</dd></div>${run.error?.details ? `<div><dt>索引原因</dt><dd>${escapeHtml(run.error.details.upstreamMessage)}<br>${escapeHtml(run.error.details.failureKind)} · HTTP ${escapeHtml(run.error.details.httpStatus ?? '–')} · ${escapeHtml(run.error.details.upstreamCode)}<br>请求 ${escapeHtml(run.error.details.requestId || '–')} · 尝试 ${escapeHtml(run.error.details.attempt)}</dd></div>` : ''}${run.error?.retryable ? '<div><dt>恢复</dt><dd><button class="btn" id="retryRun">重试失败阶段</button></dd></div>' : ''}`;
   $('#retryRun')?.addEventListener('click', async () => { await api(`/api/runs/${encodeURIComponent(runId)}/retry`, { method: 'POST' }); loadRuns(); });
   $('#runStaging').textContent = run.staging ? JSON.stringify(run.staging, null, 2) : '该运行没有 staging 产物。';
 }

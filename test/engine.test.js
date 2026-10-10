@@ -53,11 +53,11 @@ async function vectorServer(fail = false) {
     let body = ''; req.on('data', chunk => body += chunk); req.on('end', () => {
       requests.push({ url: req.url, body: body && JSON.parse(body) });
       res.writeHead(fail ? 503 : 200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(req.method === 'POST' ? { ok: !fail } : { results: [], errors: [] }));
+      res.end(JSON.stringify(req.method === 'POST' ? { ok: !fail, ...(fail ? { error: { code: 'EMBEDDING_UNAVAILABLE', message: 'embedding service unavailable' } } : {}) } : { results: [], errors: [] }));
     });
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { requests, url: `http://127.0.0.1:${server.address().port}`, async close() { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
+  return { requests, setFailure(value) { fail = value; }, url: `http://127.0.0.1:${server.address().port}`, async close() { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 test('empty first start, strict state recovery, credentials never persist', async () => {
@@ -117,7 +117,7 @@ test('real Git frozen evidence, promotion, distinct-project concurrency and dupl
 });
 
 test('index failure retains promoted files and reports a separate repair state', async () => {
-  const vector = await vectorServer(true); const runtime = await start({ vectorUrl: vector.url, analyzer: analyzer() });
+  const vector = await vectorServer(true); const events = []; const runtime = await start({ vectorUrl: vector.url, analyzer: analyzer({ events }) });
   try {
     const p = project(directory(), 'A'); runtime.store.addProject(p);
     const run = runtime.coordinator.enqueue({ projectId: p.projectId, commitSha: p.commitSha });
@@ -125,6 +125,21 @@ test('index failure retains promoted files and reports a separate repair state',
     assert.equal(run.phase, 'index-pending'); assert.equal(run.indexState, 'failed');
     assert.equal(runtime.store.readRuntime(p.projectId).lastAnalyzedCommit, p.commitSha);
     assert.ok(fs.existsSync(path.join(p.knowledgePath, 'changes', `${p.commitSha.slice(0, 12)}.md`)));
+    assert.equal(run.error.details.httpStatus, 503); assert.equal(run.error.details.upstreamCode, 'EMBEDDING_UNAVAILABLE');
+    assert.equal(run.error.details.failureKind, 'HTTP_ERROR'); assert.equal(run.error.details.attempt, 1);
+    const logDir = path.join(runtime.store.dataDir, 'logs', 'projects', p.projectId);
+    const records = fs.readFileSync(path.join(logDir, fs.readdirSync(logDir)[0]), 'utf8').trim().split('\n').map(JSON.parse);
+    const logged = records.find(record => record.event === 'knowledge.index.failed');
+    assert.equal(logged.runId, run.runId); assert.equal(logged.commitSha, p.commitSha); assert.equal(logged.phase, 'indexing');
+    assert.equal(logged.context.httpStatus, 503); assert.equal(logged.context.upstreamCode, 'EMBEDDING_UNAVAILABLE');
+    assert.equal(new EngineStore(runtime.store.dataDir).getRun(run.runId).error.details.upstreamCode, 'EMBEDDING_UNAVAILABLE');
+    const promotedAt = run.promotedAt, analysisRunId = run.analysisRunId;
+    const file = path.join(p.knowledgePath, 'changes', `${p.commitSha.slice(0, 12)}.md`), bytes = fs.readFileSync(file);
+    vector.setFailure(false); runtime.coordinator.retry(run.runId);
+    await eventually(() => run.state === 'succeeded');
+    assert.equal(run.promotedAt, promotedAt); assert.equal(run.analysisRunId, analysisRunId);
+    assert.deepEqual(fs.readFileSync(file), bytes); assert.equal(events.filter(e => e.kind === 'start').length, 1);
+    assert.equal(run.indexAttempts, 2); assert.equal(run.error, null);
   } finally { await runtime.close(); await vector.close(); }
 });
 

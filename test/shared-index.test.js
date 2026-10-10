@@ -40,6 +40,10 @@ test('shared index survives configuration replacement, reports failures and reco
     available = false; fail = true;
     await coordinator.indexSharedScope(store.state.sharedScopes[0]);
     assert.equal(store.state.sharedScopes[0].index.status, 'pending');
+    assert.equal(store.state.sharedScopes[0].index.error.details.httpStatus, 503);
+    const logDir = path.join(root, 'engine/logs/system');
+    const log = fs.readFileSync(path.join(logDir, fs.readdirSync(logDir)[0]), 'utf8').trim().split('\n').map(JSON.parse).find(record => record.event === 'knowledge.shared_index.failed');
+    assert.equal(log.context.scopeId, scope.id); assert.equal(log.context.httpStatus, 503);
     assert.ok(fs.existsSync(path.join(scope.knowledgePath, 'memories/confirmed.md')), 'index failure never removes source knowledge');
     fail = false;
     await coordinator.indexSharedScope(store.state.sharedScopes[0]);

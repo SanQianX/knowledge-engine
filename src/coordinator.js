@@ -15,6 +15,7 @@ const { MemoryService } = require('./memories');
 const { execGit } = require('./runtime/git-runner');
 const { createDiagnostics } = require('./diagnostics');
 const { finalizeAnalysisOutput } = require('./analysis-output');
+const { requestIndex } = require('./index-request');
 
 class EngineCoordinator extends EventEmitter {
   constructor(store, options = {}) {
@@ -198,16 +199,19 @@ class EngineCoordinator extends EventEmitter {
   }
   async index(run) {
     const project = this.store.getProject(run.projectId);
+    const attempt = (run.indexAttempts || 0) + 1;
+    const context = { projectId: run.projectId, runId: run.runId, operationId: run.runId, commitSha: run.commitSha, phase: 'indexing' };
     try {
-      this.store.updateRun(run.runId, { phase: 'indexing', indexState: 'running' });
-      const response = await fetch(new URL('/api/sync', this.vectorUrl), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: project.vectorProjectId || project.projectId, sourceDir: project.knowledgePath }), signal: AbortSignal.timeout(120000) });
-      const payload = await response.json();
-      if (!response.ok || payload.ok !== true) throw new Error('INDEX_FAILED');
+      this.store.updateRun(run.runId, { phase: 'indexing', indexState: 'running', indexAttempts: attempt });
+      await requestIndex({ baseUrl: this.vectorUrl, route: '/api/sync', body: { project: project.vectorProjectId || project.projectId, sourceDir: project.knowledgePath }, attempt, sanitize: this.safeMessage });
       await this.store.updateRuntime(run.projectId, state => { state.index.dirty = false; state.index.status = 'ready'; });
       this.store.updateRun(run.runId, { state: 'succeeded', phase: 'ready', indexState: 'succeeded', error: null, finishedAt: new Date().toISOString() });
+      await this.diagnostics.info('knowledge.index.completed', '知识向量索引已更新。', { ...context, context: { attempt } });
       this.notify(run, '知识已更新并可检索');
-    } catch {
-      this.store.updateRun(run.runId, { state: 'index-pending', phase: 'index-pending', indexState: 'failed', finishedAt: new Date().toISOString(), error: { code: 'INDEX_FAILED', message: '知识已更新，索引待修复。', retryable: true } });
+    } catch (error) {
+      const details = error.details || { failureKind: 'LOCAL_ERROR', upstreamCode: error.code || 'UNKNOWN', upstreamMessage: this.safeMessage(error.message), attempt };
+      await this.diagnostics.error('knowledge.index.failed', '知识已更新，向量索引失败。', { ...context, error, context: details });
+      this.store.updateRun(run.runId, { state: 'index-pending', phase: 'index-pending', indexState: 'failed', finishedAt: new Date().toISOString(), error: { code: 'INDEX_FAILED', message: '知识已更新，索引待修复。', retryable: true, details } });
       this.notify(run, '知识已更新，索引待修复');
     }
   }
@@ -220,6 +224,7 @@ class EngineCoordinator extends EventEmitter {
     const job = this.sharedIndexQueue.catch(() => {}).then(async () => {
       if (this.closed || !this.store.state.sharedScopes.some(s => s.id === scope.id)) return;
       let index;
+      const attempt = (this.store.state.sharedScopes.find(s => s.id === scope.id)?.index?.attempts || 0) + 1;
       try {
         const files = require('./runtime/markdown-knowledge-indexer').listMarkdownFiles(scope.knowledgePath);
         const digest = crypto.createHash('sha256');
@@ -235,11 +240,13 @@ class EngineCoordinator extends EventEmitter {
           const payload = await health.json();
           if (health.ok && payload.projects?.some(p => p.name === `scope-${scope.kind}-${scope.id}` && p.hasIndex && this.layout.pathsEqual(p.sourceDir || '', scope.knowledgePath))) return;
         }
-        const response = await fetch(new URL('/api/import', this.vectorUrl), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectName: `scope-${scope.kind}-${scope.id}`, sourceDir: scope.knowledgePath, watch: false }), signal: AbortSignal.timeout(120000) });
-        const payload = await response.json();
-        if (!response.ok || payload.ok !== true) throw new Error('INDEX_FAILED');
-        index = { status: 'ready', fingerprint, updatedAt: new Date().toISOString() };
-      } catch { index = { status: 'pending', message: '共享知识已保存，索引待恢复。' }; }
+        await requestIndex({ baseUrl: this.vectorUrl, route: '/api/import', body: { projectName: `scope-${scope.kind}-${scope.id}`, sourceDir: scope.knowledgePath, watch: false }, attempt, sanitize: this.safeMessage });
+        index = { status: 'ready', fingerprint, attempts: attempt, updatedAt: new Date().toISOString() };
+      } catch (error) {
+        const details = error.details || { failureKind: 'LOCAL_ERROR', upstreamCode: error.code || 'UNKNOWN', upstreamMessage: this.safeMessage(error.message), attempt };
+        index = { status: 'pending', message: '共享知识已保存，索引待恢复。', attempts: attempt, error: { code: 'INDEX_FAILED', details } };
+        await this.diagnostics.error('knowledge.shared_index.failed', index.message, { phase: 'indexing', operationId: `scope-index-${scope.id}-${attempt}`, error, context: { scopeId: scope.id, ...details } });
+      }
       // Configuration can replace projection objects while the import awaits.
       const current = this.store.state.sharedScopes.find(s => s.id === scope.id);
       if (!current) return;
