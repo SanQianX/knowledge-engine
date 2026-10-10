@@ -11,7 +11,7 @@ const executable = process.env.KB_TEST_NODE || process.execPath;
 const cli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 const argv = command === 'npm' ? [cli, ...args] : args;
 const start = Date.now(); let tail = '';
-const child = spawn(executable, argv, { cwd: path.resolve(directory), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: path.dirname(executable) + path.delimiter + process.env.PATH, FORCE_COLOR: '0' } });
+const child = spawn(executable, argv, { cwd: path.resolve(directory), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, npm_execpath: cli, PATH: path.dirname(executable) + path.delimiter + process.env.PATH, FORCE_COLOR: '0' } });
 for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { output.write(bytes); tail = (tail + bytes).slice(-5000); });
 child.on('error', error => { tail += error.message; });
 child.on('close', (code, signal) => output.end(() => {
