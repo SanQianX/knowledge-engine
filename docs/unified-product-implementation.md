@@ -26,7 +26,7 @@
 6. 固定模块版本、vendor 内容校验、网页包内启动和已有数据恢复验证；远程发布门禁单独报告。
 7. 自动回归、桌面 UI 验收、真实 Agent 抽测分别记录。
 
-当前：五仓库源码已完成主要真实接线；隔离产品环境使用引擎分析所有权，旧外壳执行路径停用。尚未宣布完整交付，也未替换用户正在使用的原 5800 预览或发布远程版本。
+当前：五仓库主要真实接线已发布到 npm，版本及下载后验收见文末。隔离产品环境使用引擎分析所有权，旧外壳执行路径停用；用户已有项目数据的最终切换及完整故障组合仍未宣布通过。
 
 ## 已实现的产品边界
 
@@ -99,7 +99,7 @@
 - 服务重启与正在晋升/正在索引/队列积压的全部组合、长时间断线和故障注入的组合矩阵仍需补充；已通过网页失败重试、索引单独修复、非法产物保护、15 秒以上离线维护及重连、迟到响应隔离、唯一订阅、离线解绑保护和正常保留数据解绑。公开状态与私有接口凭据检查通过，不等于全面安全审计。
 - 用户现有运行数据的最终切换验收尚未执行。当前真实模型及包内验收均使用隔离数据，不将临时验收项目灌入用户生产登记。
   只读检查发现默认 `C:\Users\SanQian\.project-knowledge` 登记了 Token Consumption Leaderboard、vector-hub、quant-platform 三个项目；尚需用户确认正式切换是否采用此目录，或保留隔离验收。未改动该登记、原知识文件或原项目 Hook。
-- Git 跟踪与远程发布门禁。`runtime:verify` 的工作树内容校验已通过；`release:verify` 实际执行后被未跟踪的 vendor README.md 阻止（后续新运行文件也须纳入提交）。没有擅自暂存、提交或发布，不能把 working-tree 校验等同于发布通过；远程发布不属于本轮自动执行范围。
+- Git 跟踪与 npm 发布门禁已于用户授权后通过。此前因未跟踪 vendor 文件而受阻的记录保留为历史；本轮运行文件已纳入发布提交，正式门禁同时校验 Git 索引中的真实字节。GitHub 推送、远程 Release 与 Windows 安装器不作为本次 npm 发布的完成声明。
 
 只验收正常桌面视口，不安排窄屏矩阵。
 
@@ -110,3 +110,62 @@
 event-bridge console 0.7.0、knowledge-engine 0.1.0（同时 vendored 入外壳）。
 只发布网页产品，不构建 Windows 安装包；保留用户原型及无关未提交文件。
 发布成功必须以 registry 元数据与全新 registry 安装验证为准，不以候选包记录替代。
+
+## npm 发布与下载后验收（2026-10-10）
+
+五个包均已发布，官方 registry 的 `latest` 分别指向：
+
+| 包 | latest | 本地发布提交 |
+| --- | --- | --- |
+| `@sanqianx/project-knowledge` | 4.8.0 | b2569b6 |
+| `@sanqianx/claude-ai-workbench` | 0.13.0 | 60fa631 |
+| `@sanqianx/vector-hub` | 1.0.7 | efd7c43 |
+| `@sanqianx/ai-coding-event-bridge-console` | 0.7.0 | d1cbd43 |
+| `@sanqianx/ai-coding-knowledge-engine` | 0.1.0 | e9d5346 |
+
+通过当前已配置 npm 发布身份直接发布，没有读取、展示或改动 token，没有修改
+双重验证、包权限或 Trusted Publishing 设置。未移动已有 npm 版本或 Git 标签。
+Workbench 的 0.12.0 已存在，因此递增为 0.13.0；其余有改动的已发布模块同样递增。
+上传成功与 registry 可以下载之间存在延迟，直到实际下载成功才计为发布完成。
+
+发布前：外壳完整回归 118/118、Workbench 259/259、vector-hub 45/45、
+bridge 29/29 组、引擎 15/15；版本同步、Git 跟踪、运行文件 hash、打包内容门禁
+全部通过。第一次外壳回归发现旧集成断言及安装参数仍引用无作用域包名，修正
+实际安装逻辑及测试后重跑完整 118 组通过。插件指向 `@sanqianx/project-knowledge`。
+
+Git 的自动换行转换曾使 13 个 vendored 文件与发布清单字节不同；通过限定在
+vendored 目录的 `.gitattributes` 保留原字节，并增强门禁校验 Git 索引，未降低
+hash 校验要求。原型、凭据、验收数据和 Windows 安装器未进入 npm 包。
+
+全新官方 npm 安装根目录：
+`C:\Users\SanQian\AppData\Local\Temp\kb-registry-product-HQCxl4`。
+使用该目录内的空缓存安装 `@sanqianx/project-knowledge@latest`；安装锁中的依赖
+全部来自 `https://registry.npmjs.org/`，无 file/Git/link 依赖。主包 dist integrity、
+三个依赖模块逐文件 hash、引擎 34 个 vendor 文件与 SDK 本地解析均通过。
+证据为根目录 `registry-installation.json`，不能用此前本地 tgz 验收替代。
+
+下载后网页验收使用安装目录中的五个真实产品运行实现，仅模型/embedding 与
+浏览器驱动来自开发验收工具：
+
+- `.agent-state/acceptance/npm-web-regression/report.json`：15 项桌面断言通过；
+  包括 UI 双目录导入、四模块登记、真实提交自动更新、流式消息/中止、项目
+  切换/迟到响应隔离、知识引用、领域检索、记忆落盘、主题、重载及保留数据解绑。
+- `.agent-state/acceptance/npm-web-faults/report.json`：9 项故障断言通过；包括
+  模型重试、FIFO、项目独立推进、仅修复索引、越界产物保护、离线后台维护与
+  重连刷新、唯一订阅和私有配置鉴权。最初并行 fixture 因端口 0 回落默认端口
+  而冲突，修正验收工具的随机空闲端口后重跑通过，不修改已发布运行包。
+- `acceptance-data/installed-restart-acceptance.json` 和
+  `installed-shutdown-acceptance.json`：包内四个真实进程分别被守护恢复，四个
+  进程最终均以 exitCode 0 正常退出。本轮为真正空数据启动，不冒充已有数据迁移。
+- 单一 1920×1080 视口截图位于上述 npm 网页验收目录，不增加窄屏矩阵。
+
+`http://127.0.0.1:5804/#home` 使用这次官方 npm 安装的包内四模块，保留隔离
+空数据，供用户直接导入和配置。5802 的用户会话没有重启，默认原三项目登记及
+知识目录没有迁移。真实模型/真实 embedding 抽测仍采用上文已有独立证据，
+本次下载后替身回归不重复宣称为真实模型调用或全面故障认证。
+
+安装工具第一次未显式限定 prefix，npm 向上识别到 `C:\Users\SanQian`，更新了
+该目录 `package.json`、`package-lock.json` 中本产品依赖到 4.8.0；未删除已有
+ccusage / yaml-language-server 依赖，也未擅自清理该目录。已改为创建独立私有
+验收 package.json 并显式指定 prefix/global=false，随后从另一个空缓存重做上述
+全新安装。此前失败记录不计为验收通过。

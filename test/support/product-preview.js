@@ -7,19 +7,27 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
+const { createRequire } = require('node:module');
 const AtomicFile = require('../../src/runtime/atomic-file');
-const { createEngineServer } = require('../../src/server');
 const family = path.resolve(__dirname, '../../..');
-const bridgePackage = path.join(family, 'ai-coding-event-bridge', 'packages', 'console');
+const installation = process.env.KB_PRODUCT_INSTALLATION_REPORT ? JSON.parse(fs.readFileSync(process.env.KB_PRODUCT_INSTALLATION_REPORT)) : null;
+if (installation && (!installation.integrityPassed || installation.schema !== 'project-knowledge/installed-registry/v1')) throw new Error('Verified registry installation required');
+const shellPackage = installation?.core || path.join(family, 'project-knowledge-base');
+const installedResolve = installation ? createRequire(path.join(shellPackage, 'package.json')) : null;
+const modulePackage = (name, source) => installedResolve ? path.dirname(installedResolve.resolve(`${name}/package.json`)) : path.join(family, source);
+const bridgePackage = modulePackage('@sanqianx/ai-coding-event-bridge-console', 'ai-coding-event-bridge/packages/console');
+const workbenchPackage = modulePackage('claude-ai-workbench', 'claude-ai-workbench');
+const vectorPackage = modulePackage('@sanqianx/vector-hub', 'vector-hub');
+const { createEngineServer } = require(installation ? path.join(shellPackage, '_modules/knowledge-engine/src/server') : '../../src/server');
 const { createConsoleServer } = require(path.join(bridgePackage, 'src/server'));
-const { BridgeAdapter } = require(path.join(family, 'project-knowledge-base', '_site/lib/bridge-adapter'));
-const { ModuleBridge } = require(path.join(family, 'project-knowledge-base', '_site/lib/module-bridge'));
-const { createRuntime, startServer } = require(path.join(family, 'project-knowledge-base', '_site/lib/server-app'));
-const { createWorkbenchServer } = require(path.join(family, 'claude-ai-workbench', 'packages/server'));
-const { ProfileStore } = require(path.join(family, 'claude-ai-workbench', 'packages/server/lib/profile-store'));
+const { BridgeAdapter } = require(path.join(shellPackage, '_site/lib/bridge-adapter'));
+const { ModuleBridge } = require(path.join(shellPackage, '_site/lib/module-bridge'));
+const { createRuntime, startServer } = require(path.join(shellPackage, '_site/lib/server-app'));
+const { createWorkbenchServer } = require(path.join(workbenchPackage, 'packages/server'));
+const { ProfileStore } = require(path.join(workbenchPackage, 'packages/server/lib/profile-store'));
 const { createFakeRunner } = require(path.join(family, 'claude-ai-workbench', 'tests/helpers/fake-runner'));
-const { HubManager } = require(path.join(family, 'vector-hub', 'dist/cjs/server/manager'));
-const { createServer } = require(path.join(family, 'vector-hub', 'dist/cjs/server/server'));
+const { HubManager } = require(path.join(vectorPackage, 'dist/cjs/server/manager'));
+const { createServer } = require(path.join(vectorPackage, 'dist/cjs/server/server'));
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const url = server => `http://127.0.0.1:${server.address().port}`;
 
@@ -27,7 +35,7 @@ async function main() {
   const realProfile = process.env.KB_ACCEPTANCE_REAL_PROFILE_ID ? new ProfileStore({ dataDir: process.env.KB_REAL_PROFILE_DATA_DIR || path.join(os.homedir(), '.agent-terminal') }).runtimeProfile(process.env.KB_ACCEPTANCE_REAL_PROFILE_ID) : null;
   const realEmbeddingSettings = process.env.KB_ACCEPTANCE_REAL_EMBEDDING === '1' ? JSON.parse(fs.readFileSync(process.env.KB_REAL_VECTOR_CONFIG || path.join(os.homedir(), '.vector-hub', 'config.json'), 'utf8')).settings : null;
   if (realEmbeddingSettings && (!realEmbeddingSettings.apiKey || !['minimax', 'openai'].includes(realEmbeddingSettings.provider))) throw new Error('REAL_EMBEDDING_CONFIGURATION_REQUIRED');
-  if (realProfile) process.env.NODE_PATH = [path.join(family, 'claude-ai-workbench', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+  if (realProfile) process.env.NODE_PATH = installation ? [path.join(shellPackage, 'node_modules'), path.join(installation.installedRoot, 'node_modules')].join(path.delimiter) : [path.join(family, 'claude-ai-workbench', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
   const root = process.env.KB_PRODUCT_TEST_ROOT ? path.resolve(process.env.KB_PRODUCT_TEST_ROOT) : fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
   if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('智脑桌面验收-')) throw new Error('Acceptance root must be its own temporary directory');
   const token = crypto.randomBytes(32).toString('hex');
@@ -50,7 +58,7 @@ async function main() {
   const observations = { attempts: {}, syncFailures: 0 };
   const recordFaults = () => AtomicFile.writeJsonAtomic(path.join(root, 'fault-observations.json'), observations);
   const manager = await HubManager.load({ managed: true, rootPath: path.join(root, 'indexes'), configPath: path.join(root, 'vector.json'), ...(realEmbeddingSettings ? {} : { embeddingsFactory: () => ({ maxTokens: 1000, async createEmbeddings(inputs) { return { status: 'success', output: (Array.isArray(inputs) ? inputs : [inputs]).map(() => [1, 0]) }; } }) }) });
-  const vectorHandler = createServer(manager, { runtimeToken: token, uiPath: path.join(family, 'vector-hub', 'ui/index.html') });
+  const vectorHandler = createServer(manager, { runtimeToken: token, uiPath: path.join(vectorPackage, 'ui/index.html') });
   const vectors = http.createServer((req, res) => {
     if (faultScenarios && req.method === 'POST' && req.url === '/api/sync' && observations.syncFailures === 0) {
       observations.syncFailures++; recordFaults(); req.resume();
@@ -84,8 +92,13 @@ async function main() {
   await shellRuntime.settingsStore.initialize({ knowledge: { rootPath: path.join(root, 'knowledge') } });
   await shellRuntime.registryStore.initialize();
   shellRuntime.moduleBridge = new ModuleBridge({ dataDir: process.env.KB_DATA_DIR, settingsStore: shellRuntime.settingsStore, registryStore: shellRuntime.registryStore, projectStore: shellRuntime.projectStore, logger: shellRuntime.logger, runtimeToken: token, terminalUrl: url(workbench.server), vectorHubUrl: url(vectors), eventBridgeUrl: url(events), engineUrl: url(engine.server) });
-  const shell = await startServer({ runtime: shellRuntime, port: Number(process.env.KB_PRODUCT_TEST_PORT || 5801), host: '127.0.0.1' });
-  const details = { pid: process.pid, url: `http://127.0.0.1:${shell.port}`, root, repositories, knowledgeRoot: path.join(root, 'knowledge'), modules: { engine: url(engine.server), workbench: url(workbench.server), events: url(events), vectors: url(vectors) }, model: realProfile ? realEmbeddingSettings ? 'real Agent and real embeddings; original provider stores are read-only' : 'real Agent; embedding remains a controlled substitute' : 'controlled substitute; not real Agent acceptance' };
+  let shellPort = Number(process.env.KB_PRODUCT_TEST_PORT || 5801);
+  if (shellPort === 0) {
+    const probe = http.createServer(); await listen(probe); shellPort = probe.address().port;
+    await new Promise(resolve => probe.close(resolve));
+  }
+  const shell = await startServer({ runtime: shellRuntime, rootDir: shellPackage, port: shellPort, host: '127.0.0.1' });
+  const details = { pid: process.pid, url: `http://127.0.0.1:${shell.port}`, root, repositories, knowledgeRoot: path.join(root, 'knowledge'), installationSource: installation?.schema || 'source checkouts', installationReport: process.env.KB_PRODUCT_INSTALLATION_REPORT || null, runtimeRoots: { shell: shellPackage, engine: installation ? path.join(shellPackage, '_modules/knowledge-engine') : path.join(family, 'knowledge-engine'), workbench: workbenchPackage, vector: vectorPackage, events: bridgePackage }, modules: { engine: url(engine.server), workbench: url(workbench.server), events: url(events), vectors: url(vectors) }, model: realProfile ? realEmbeddingSettings ? 'real Agent and real embeddings; original provider stores are read-only' : 'real Agent; embedding remains a controlled substitute' : 'controlled substitute; not real Agent acceptance' };
   AtomicFile.writeJsonAtomic(path.join(root, 'acceptance-environment.json'), details);
   process.stdout.write(JSON.stringify(details) + '\n');
   let stopped = false;

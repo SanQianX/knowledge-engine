@@ -9,9 +9,9 @@ let ownedShell;
 async function freePort() { const server = net.createServer(); await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const port = server.address().port; await new Promise(resolve => server.close(resolve)); return port; }
 async function main() {
   const reportFile = path.resolve(process.argv[2]); const installation = JSON.parse(fs.readFileSync(reportFile));
-  assert.ok(installation.integrityPassed && installation.schema === 'project-knowledge/installed-candidates/v1');
+  assert.ok(installation.integrityPassed && ['project-knowledge/installed-candidates/v1', 'project-knowledge/installed-registry/v1'].includes(installation.schema));
   assert.equal(path.dirname(installation.installedRoot), path.resolve(os.tmpdir()));
-  assert.ok(path.basename(installation.installedRoot).startsWith('kb-installed-product-'));
+  assert.ok(/^(kb-installed-product-|kb-registry-product-)/.test(path.basename(installation.installedRoot)));
   const root = path.join(installation.installedRoot, 'acceptance-data');
   fs.mkdirSync(root, { recursive: true });
   const [terminal, vector, events, engine] = await Promise.all(Array.from({ length: 4 }, freePort));
@@ -39,7 +39,7 @@ async function main() {
   const snapshot = await (await read('/api/engine/snapshot')).json();
   if (!process.argv.includes('--existing-data')) { assert.equal(snapshot.projects.length, 0); assert.equal(snapshot.runs.length, 0); }
   await shell.runtime.moduleBridge.syncEngineConfiguration();
-  const progress = { schema: 'project-knowledge/installed-startup/v1', mode: 'real installed modules; no Agent request during startup', url, installedRoot: installation.installedRoot, core: installation.core, integrityPassed: true, modules: Object.fromEntries(Object.entries(health).map(([key, value]) => [key, { up: value.up, url: value.url }])), emptyState: snapshot.projects.length === 0 && snapshot.runs.length === 0, registeredProjects: snapshot.projects.length, checkedAt: new Date().toISOString(), pid: process.pid };
+  const progress = { schema: 'project-knowledge/installed-startup/v1', installationSource: installation.schema, mode: 'real installed modules; no Agent request during startup', url, installedRoot: installation.installedRoot, core: installation.core, integrityPassed: true, modules: Object.fromEntries(Object.entries(health).map(([key, value]) => [key, { up: value.up, url: value.url }])), emptyState: snapshot.projects.length === 0 && snapshot.runs.length === 0, registeredProjects: snapshot.projects.length, checkedAt: new Date().toISOString(), pid: process.pid };
   AtomicFile.writeJsonAtomic(path.join(root, 'installed-startup-acceptance.json'), progress);
   process.stdout.write(`INSTALLED_PRODUCT_READY ${url}\n`);
   if (process.argv.includes('--verify-restart')) {

@@ -8,7 +8,7 @@ const shellRoot = path.resolve(__dirname, '../../../project-knowledge-base');
 const { findChrome } = require(path.join(shellRoot, '_site/_test/helpers/find-chrome'));
 const { launchCdpBrowser, waitFor } = require(path.join(shellRoot, '_site/_test/helpers/cdp-browser'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
-const proof = path.resolve(__dirname, '../../.agent-state/acceptance/web-regression');
+const proof = path.resolve(__dirname, `../../.agent-state/acceptance/${process.env.KB_PRODUCT_INSTALLATION_REPORT ? 'npm-web-regression' : 'web-regression'}`);
 const environmentFile = path.join(root, 'acceptance-environment.json');
 const git = (repo, args) => execFileSync('git', args, { cwd: repo, windowsHide: true, encoding: 'utf8' }).trim();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -183,7 +183,7 @@ async function main() {
     assert.equal((await api('/api/engine/projects')).projects.length, 1);
     assert.equal(browser.exceptions.length, 0, JSON.stringify(browser.exceptions));
     fs.mkdirSync(proof, { recursive: true });
-    fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), viewport: '1920x1080', model: 'controlled substitute', embedding: 'controlled substitute', commits, assertions: ['UI imports and four-module wiring', 'true Git Hook to live UI', 'native streamed message/navigation/abort', 'project drafts/history/citations', 'long commit citation wrapping', 'late search and document response isolation', 'domain scope', 'memory edit/confirm/ignore and disk retrieval', 'native bridge events and engine diagnostics', 'four stable iframe identities', 'single progress subscription', 'four uniform embedded themes', 'diagnostic subscription cleanup', 'durable reload', 'four-module keep-data unbind'] }, null, 2));
+    fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), installationSource: environment.installationSource, runtimeRoots: environment.runtimeRoots, viewport: '1920x1080', model: 'controlled substitute', embedding: 'controlled substitute', commits, assertions: ['UI imports and four-module wiring', 'true Git Hook to live UI', 'native streamed message/navigation/abort', 'project drafts/history/citations', 'long commit citation wrapping', 'late search and document response isolation', 'domain scope', 'memory edit/confirm/ignore and disk retrieval', 'native bridge events and engine diagnostics', 'four stable iframe identities', 'single progress subscription', 'four uniform embedded themes', 'diagnostic subscription cleanup', 'durable reload', 'four-module keep-data unbind'] }, null, 2));
     console.log('PRODUCT_WEB_UI_ACCEPTANCE_PASSED (real services/Git/Hook/files/index, controlled model/embedding, 1920x1080 only)');
   } catch (error) {
     if (browser) { console.error(await browser.evaluate("document.body.innerText + '\\nWORKBENCH: ' + (document.getElementById('workFrame').contentDocument?.body?.innerText || '')")); await browser.screenshot(path.join(proof, 'failure.png')); }
