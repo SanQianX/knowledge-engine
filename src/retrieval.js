@@ -7,6 +7,23 @@ const { DomainError } = require('./runtime/contracts');
 
 class EngineRetrieval extends KnowledgeRetrievalService {
   constructor(options) { super(options); this.store = options.store; this.memories = options.memories; this.vectorUrl = options.vectorUrl || 'http://127.0.0.1:8787'; }
+  signalSet(input = {}) {
+    const signals = super.signalSet(input);
+    const query = signals.indexQuery.trim().toLowerCase();
+    if (/^[a-f0-9]{7,64}$/.test(query) && this.store.listRuns().some(run => run.promotedAt && run.commitSha?.startsWith(query))) signals.commitPrefix = query;
+    return signals;
+  }
+  score(candidate, signals) {
+    if (signals.commitPrefix) {
+      // A known commit is an identifier, not a semantic topic. Unrelated
+      // vector hits must not crowd its current, provenance-checked files out.
+      const source = this.store.listRuns(candidate.projectId).find(run => run.promotedAt && run.staging?.operations?.some(operation => operation.path === candidate.entryId));
+      if (!source?.commitSha?.startsWith(signals.commitPrefix)) return { score: 0, selectionSignals: [] };
+      const result = super.score(candidate, signals);
+      return { score: Math.max(1, result.score), selectionSignals: [...result.selectionSignals, 'exact-commit'] };
+    }
+    return super.score(candidate, signals);
+  }
   resolve(input = {}) {
     let project = this.store.getProject(input.projectId || input.projectSlug || input.project);
     if (!project && (input.repoPath || input.path)) project = this.store.listProjects().find(p => this.layout.pathsEqual(p.repoPath, input.repoPath || input.path));
