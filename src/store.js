@@ -14,21 +14,14 @@ class EngineStore {
   constructor(dataDir, options = {}) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, 'engine-state.json');
-    this.state = { schemaVersion: 2, projects: [], runs: [], events: [], cursor: 0, journalCursors: {}, memories: [], sharedScopes: [] };
+    this.state = { schemaVersion: 3, projects: [], runs: [], events: [], cursor: 0, journalCursors: {}, memories: [], sharedScopes: [] };
     if (!options.deferLoad) this.load();
   }
 
   load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      if (raw && (raw.schemaVersion === undefined || raw.schemaVersion === 1)) {
-        const backup = path.join(this.dataDir, `legacy-debug-state-${crypto.randomUUID()}.json`);
-        require('./runtime/atomic-file').writeJsonAtomic(backup, raw);
-        this.state.legacyStateBackup = backup;
-        this.save();
-        return;
-      }
-      if (raw?.schemaVersion !== 2) throw new Error('Unsupported engine state');
+      if (raw?.schemaVersion !== 3) throw Object.assign(new Error('不再读取旧版引擎数据，请使用新的空数据目录重新导入项目。'), { code: 'SCHEMA_UNSUPPORTED' });
       if (!raw || !Array.isArray(raw.projects) || !Array.isArray(raw.runs) || !Array.isArray(raw.events) || !Number.isSafeInteger(raw.cursor) || raw.cursor < 0) throw new Error('Invalid engine state');
       if (raw.memories && !Array.isArray(raw.memories) || raw.sharedScopes && !Array.isArray(raw.sharedScopes) || raw.journalCursors && (typeof raw.journalCursors !== 'object' || Array.isArray(raw.journalCursors))) throw new Error('Invalid engine projections');
       const ids = new Set();
@@ -40,7 +33,7 @@ class EngineStore {
       const runIds = new Set();
       for (const run of raw.runs) {
         validateProjectId(run.projectId);
-        if (!/^run-[a-f0-9-]{36}$/.test(run.runId || '') || runIds.has(run.runId) || !/^[a-f0-9]{40}$/.test(run.commitSha || '') || !['queued', 'running', 'failed', 'succeeded', 'index-pending'].includes(run.state) || !Number.isSafeInteger(run.sequence) || run.sequence < 1) throw new Error('Invalid queued run');
+        if (!/^run-[a-f0-9-]{36}$/.test(run.runId || '') || runIds.has(run.runId) || !/^[a-f0-9]{40}$/.test(run.commitSha || '') || !['queued', 'running', 'failed', 'succeeded', 'index-pending', 'cancelled'].includes(run.state) || !Number.isSafeInteger(run.sequence) || run.sequence < 1) throw new Error('Invalid queued run');
         runIds.add(run.runId);
       }
       for (const [journalId, sequence] of Object.entries(raw.journalCursors || {})) if (!/^(global|sha256:[a-f0-9]{64})$/.test(journalId) || !Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid journal cursor');
@@ -48,6 +41,7 @@ class EngineStore {
       for (const memory of raw.memories || []) if (!memory || !['candidate', 'confirmed', 'ignored'].includes(memory.status) || typeof memory.text !== 'string' || !memory.evidence?.projectId || !/^[a-f0-9]{40}$/.test(memory.evidence.commitSha || '')) throw new Error('Invalid memory record');
       this.state = { ...this.state, ...raw };
     } catch (error) {
+      if (error.code === 'SCHEMA_UNSUPPORTED') throw error;
       if (error.code !== 'ENOENT') throw Object.assign(new Error('引擎状态损坏，已保留原文件；请从备份恢复。'), { code: 'DATA_CORRUPT', cause: error });
     }
   }
@@ -129,11 +123,14 @@ class EngineStore {
   }
 
   removeProject(projectId) {
-    if (this.state.runs.some(r => r.projectId === projectId && ['queued', 'running'].includes(r.state))) throw Object.assign(new Error('请等待当前维护运行结束后再解绑。'), { status: 409, code: 'PROJECT_BUSY' });
+    if (this.state.runs.some(r => r.projectId === projectId && r.state === 'running')) throw Object.assign(new Error('此项目正在执行知识维护，请等待写入结束后再解绑。'), { status: 409, code: 'PROJECT_BUSY' });
     const before = this.state.projects.length;
+    const now = new Date().toISOString();
+    const cancelled = this.state.runs.filter(r => r.projectId === projectId && r.state === 'queued');
+    for (const run of cancelled) Object.assign(run, { state: 'cancelled', phase: 'cancelled', finishedAt: now, cancellationReason: 'project-unbound' });
     this.state.projects = this.state.projects.filter(p => p.projectId !== projectId);
     this.save();
-    return this.state.projects.length < before;
+    return { removed: this.state.projects.length < before, cancelledRuns: cancelled.length };
   }
 
   listRuns(projectId) {

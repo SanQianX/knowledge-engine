@@ -97,6 +97,14 @@ class EngineCoordinator extends EventEmitter {
     this.ready.then(() => this.pump());
     return run;
   }
+  async removeProject(projectId) {
+    await this.ready;
+    // An indexing job can still hold a write lease even after its state changes.
+    if (this.active.has(projectId)) throw Object.assign(new Error('此项目正在执行知识维护，请等待写入结束后再解绑。'), { status: 409, code: 'PROJECT_BUSY' });
+    const result = this.store.removeProject(projectId);
+    if (result.removed) this.emit('progress', this.store.addEvent({ type: 'project.unregister', projectId, summary: `已解绑项目，取消 ${result.cancelledRuns} 个未开始任务；知识与提交证据保留。` }));
+    return result;
+  }
   drain() {
     if (this.drainJob) return this.drainJob;
     if (this.closed) return Promise.resolve();
@@ -115,8 +123,8 @@ class EngineCoordinator extends EventEmitter {
         let through = cursor;
         for (const event of events) {
           if (this.closed) break;
-          const p = this.store.listProjects().find(p => (journal.journalId !== 'global' && p.journalId === journal.journalId)
-            || ((journal.journalId === 'global' || !p.journalId) && event.repoIdentity?.workspaceRoot && this.layout.pathsEqual(p.repoPath, event.repoIdentity.workspaceRoot)));
+          const p = this.store.listProjects().find(p => p.enabled !== false && ((journal.journalId !== 'global' && p.journalId === journal.journalId)
+            || ((journal.journalId === 'global' || !p.journalId) && event.repoIdentity?.workspaceRoot && this.layout.pathsEqual(p.repoPath, event.repoIdentity.workspaceRoot))));
           if (p) {
             if (event.schema === 'ai-coding-event/v1' && ['user_prompt', 'assistant_response'].includes(event.eventType)) await this.conversations.appendBridgeEvent(p.projectId, { ...event, journalId: journal.journalId });
             if (event.schema === 'git-commit-boundary/v1' && /^[a-f0-9]{7,64}$/i.test(event.commitSha || '')) {
@@ -124,7 +132,7 @@ class EngineCoordinator extends EventEmitter {
               const baseline = p.runtime.lastAnalyzedCommit || p.trackingStartCommit;
               const completed = this.reconciler.processingLedger.read(p.projectId, event.commitSha);
               const historical = baseline && (baseline === event.commitSha || (await execGit(p.repoPath, ['merge-base', '--is-ancestor', event.commitSha, baseline])).ok);
-              if (!completed && !historical) this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
+              if (!completed && !historical && this.store.getProject(p.projectId)?.enabled) this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
             }
           }
           through = event.sequence;

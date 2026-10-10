@@ -5,7 +5,6 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { EngineStore } = require('./store');
 const { EngineCoordinator } = require('./coordinator');
-const { importLegacyState } = require('./migration');
 const AtomicFile = require('./runtime/atomic-file');
 
 const VERSION = require('../package.json').version;
@@ -13,7 +12,7 @@ const UI_DIR = path.resolve(__dirname, '..', 'ui');
 const STATIC_FILES = new Map([['/', ['index.html', 'text/html']], ['/index.html', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/app.css', ['app.css', 'text/css']]]);
 
 function createEngineServer(options = {}) {
-  const dataDir = options.dataDir || path.join(process.cwd(), 'data');
+  const dataDir = options.dataDir || path.join(process.cwd(), 'data-v3');
   const store = options.store || new EngineStore(dataDir, { deferLoad: true });
   let releaseLease;
   const coordinator = new EngineCoordinator(store, { ...options, initializeHook: async () => {
@@ -46,14 +45,13 @@ function createEngineServer(options = {}) {
     }
     if (pathname.startsWith('/api/')) {
       const body = await readBody(req);
-      if (pathname === '/api/migrate' && req.method === 'POST') {
-        if (!trusted(req)) throw httpError(403, 'RUNTIME_AUTH_REQUIRED', '仅允许受信任外壳迁移运行状态。');
-        await coordinator.ready;
-        send(res, 200, { ok: true, ...await importLegacyState(coordinator, body) }); return;
+      if (pathname === '/api/runtime-auth' && req.method === 'GET') {
+        if (!trusted(req)) throw httpError(403, 'RUNTIME_AUTH_REQUIRED', '仅允许受信任外壳检查连接。');
+        send(res, 200, { ok: true, dataSchemaVersion: store.state.schemaVersion }); return;
       }
       if (pathname === '/api/control' && req.method === 'POST') {
         if (!trusted(req)) throw httpError(403, 'RUNTIME_AUTH_REQUIRED', '仅允许受信任外壳切换运行所有权。');
-        if (body.enabled !== true) throw httpError(400, 'INVALID_ARGUMENT', '只支持完成迁移后的启用操作。');
+        if (body.enabled !== true) throw httpError(400, 'INVALID_ARGUMENT', '只支持外壳完成接线后的启用操作。');
         await coordinator.activate(); send(res, 200, { ok: true }); return;
       }
       if (pathname === '/api/runtime-config' && req.method === 'POST') {
@@ -102,7 +100,7 @@ function createEngineServer(options = {}) {
 }
 
 async function api(method, pathname, search, body, store, coordinator, ctx) {
-  if (method === 'GET' && pathname === '/api/health') return { name: 'knowledge-engine', version: VERSION, debug: ctx.debug, executionEnabled: coordinator.executionEnabled, uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000), dataDir: ctx.dataDir, counts: { projects: store.state.projects.length, runs: store.state.runs.length, running: coordinator.active.size }, journal: { cursor: store.state.cursor, cursors: store.state.journalCursors, consumer: 'knowledge-engine', enabled: coordinator.consume, error: coordinator.journalError || null }, concurrency: coordinator.concurrency };
+  if (method === 'GET' && pathname === '/api/health') return { name: 'knowledge-engine', version: VERSION, dataSchemaVersion: store.state.schemaVersion, debug: ctx.debug, executionEnabled: coordinator.executionEnabled, uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000), dataDir: ctx.dataDir, counts: { projects: store.state.projects.length, runs: store.state.runs.length, running: coordinator.active.size }, journal: { cursor: store.state.cursor, cursors: store.state.journalCursors, consumer: 'knowledge-engine', enabled: coordinator.consume, error: coordinator.journalError || null }, concurrency: coordinator.concurrency };
   if (method === 'GET' && pathname === '/api/projects') return { projects: store.listProjects() };
   if (method === 'GET' && pathname === '/api/memories') return { memories: coordinator.memories.list(Object.fromEntries(search)) };
   const memoryMatch = pathname.match(/^\/api\/memories\/([^/]+)$/);
@@ -118,8 +116,9 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
   }
   const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
   if (method === 'DELETE' && projectMatch) {
-    if (!store.removeProject(decodeURIComponent(projectMatch[1]))) throw httpError(404, 'NOT_FOUND', '项目未登记。');
-    return { removed: true, keptData: true };
+    const result = await coordinator.removeProject(decodeURIComponent(projectMatch[1]));
+    if (!result.removed) throw httpError(404, 'NOT_FOUND', '项目未登记。');
+    return { ...result, keptData: true };
   }
   if (method === 'GET' && pathname === '/api/runs') return { runs: store.listRuns(search.get('projectId')) };
   const runMatch = pathname.match(/^\/api\/runs\/([^/]+)(\/retry)?$/);

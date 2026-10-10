@@ -33,7 +33,9 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 
 打开 `http://127.0.0.1:5790` 即调试台。默认绑定 loopback：运行历史包含 commit 证据与知识内容，不出本机。
 
-首次启动为空，不创建演示项目。`--debug` 才开放手工运行、事件注入和模拟失败。独立运行默认只提供读取与诊断；设置 `KNOWLEDGE_ENGINE_CONSUME=1` 开始消费。外壳守护使用 `KB_ENGINE_MANAGED=1`，完成受保护迁移后再通过鉴权控制接口启用消费与执行。
+首次启动为空，不创建演示项目。`--debug` 才开放手工运行、事件注入和模拟失败。独立运行默认只提供读取与诊断；设置 `KNOWLEDGE_ENGINE_CONSUME=1` 开始消费。外壳守护使用 `KB_ENGINE_MANAGED=1`，确认服务身份、运行期鉴权、项目接线及配置后启用消费与执行；不再导入旧外壳任务。
+
+0.2.0 使用全新 schemaVersion 3，独立运行默认目录为 `./data-v3`。旧版状态目录明确拒绝读取，原文件保持不变；不备份后重置、不迁移、不创建 `upgrade-recovery`。同一新版数据目录内的崩溃恢复仍保留。
 
 本模块零新增 npm 依赖、CommonJS、Node ≥18；无头 Agent SDK 由宿主已安装的 Workbench/SDK 提供，缺失时明确失败，不退回假分析。完整产品的 Node 门槛为 ≥22。
 
@@ -41,9 +43,9 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 版本 / uptime / 计数 / journal 游标 |
+| GET | `/api/health` | 版本 / dataSchemaVersion / uptime / 计数 / journal 游标 |
 | GET / POST | `/api/projects` | 项目列表 / 注册（按 projectId 幂等） |
-| DELETE | `/api/projects/:id` | 摘除登记 |
+| DELETE | `/api/projects/:id` | 摘除登记，取消未开始任务；实际运行或写入租约未释放时返回 409；保留代码、知识和证据 |
 | GET | `/api/runs?projectId=` | 分析运行列表（新→旧） |
 | POST | `/api/runs` | 仅调试模式手工运行；必填完整 `commitSha` |
 | GET | `/api/runs/:id` | 运行详情（含 staging manifest） |
@@ -57,7 +59,8 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 | GET / PATCH | `/api/memories`、`/api/memories/:id` | 候选和已确认记忆；编辑、确认、忽略持久化 |
 | POST | `/api/scopes` | 外壳投影智脑、领域共享目录；受运行期鉴权保护 |
 | POST | `/api/runtime-config` | 运行期模型配置，仅保留在内存；受鉴权保护 |
-| POST | `/api/migrate`、`/api/control` | 暂停状态迁移 / 迁移完成后启用；受鉴权保护 |
+| GET | `/api/runtime-auth` | 本机服务确认运行期鉴权；受鉴权保护，不对浏览器反代 |
+| POST | `/api/control` | 外壳完成接线后启用；受鉴权保护。旧 `/api/migrate` 已删除 |
 
 鉴权接口只接受无浏览器 Origin 的本机服务调用，使用 `KB_ENGINE_RUNTIME_TOKEN` 的 Bearer token。外壳不能把这些接口或解析后的凭据转发到浏览器。登记投影只接受白名单元数据，API key 不写入 EngineStore、任务记录或日志。
 
@@ -71,11 +74,11 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 - 晋升与索引分别记录。索引失败保留已晋升知识并显示待修复，不重新调用模型。
 - 项目、领域、智脑检索使用包含范围。向量只提供排序，显示内容必须来自当前真实文件；索引不可用时降级为文件检索。
 - 候选必须有已晋升文件中的引用依据，未确认候选不能进入任务。确认记录原子持久化后写共享记忆文件，派生索引异步更新，索引失败不会撤销有效记忆。
-- 旧脚手架演示状态先备份，不显示成真实项目。损坏的正式状态不覆盖、不清空。
+- 旧格式不读取、不自动迁移。损坏的正式状态不覆盖、不清空。
 
 ## 验证与尚未验收项
 
-`npm test` 覆盖真实 Git/Hook、真实分项目 journal、真实 vector-hub 文件索引、晋升、重复抑制、FIFO/并发、记忆、迁移及进程隔离。自动测试中的模型和 embedding 是可控替身。
+`npm test` 覆盖真实 Git/Hook、真实分项目 journal、真实 vector-hub 文件索引、晋升、重复抑制、FIFO/并发、记忆、旧格式拒绝、新版恢复及进程隔离。自动测试中的模型和 embedding 是可控替身。
 
 `npm run test:web` 使用兄弟源码仓库启动隔离的五服务网页环境，只有模型与 embedding 是替身。单一 1920×1080 视口验证双目录 UI 导入、真实 Hook 到自动刷新、原生消息流与中止、快速项目切换/草稿/历史、迟到检索及文件响应、领域检索、记忆落盘、四 iframe 身份与主题、唯一进度连接、诊断关闭和保留数据解绑；不会在用户代码仓库提交。该脚本是开发验收工具，不属于引擎生产运行依赖。
 

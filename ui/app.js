@@ -50,7 +50,7 @@ function fmtTime(iso) {
 }
 function fmtDuration(ms) { return ms == null ? '–' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`; }
 function shortSha(sha) { return sha ? sha.slice(0, 7) : '–'; }
-function stateBadge(state) { return `<span class="badge ${escapeHtml(state)}">${escapeHtml(({ queued: '排队', running: '运行中', succeeded: '可检索', failed: '失败', 'index-pending': '索引待修复' })[state] || state)}</span>`; }
+function stateBadge(state) { return `<span class="badge ${escapeHtml(state)}">${escapeHtml(({ queued: '排队', running: '运行中', succeeded: '可检索', failed: '失败', 'index-pending': '索引待修复', cancelled: '已取消' })[state] || state)}</span>`; }
 function typeBadge(type) { return `<span class="badge type">${escapeHtml(type)}</span>`; }
 function scopedPath(path) { return scopedProjectId ? `${path}${path.includes('?') ? '&' : '?'}projectId=${encodeURIComponent(scopedProjectId)}` : path; }
 function successfulRun(runs) { return runs.find(run => run.promotedAt) || null; }

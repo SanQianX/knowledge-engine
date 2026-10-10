@@ -44,20 +44,24 @@ test('archived instructions remain evidence; successful prose without files is a
   fs.writeFileSync(job.manifestPath, '');
   assert.throws(() => requireAnalysisOutput(job.manifestPath), { code: 'ANALYSIS_OUTPUT_MISSING' });
 });
-test('one engine owns a data directory; legacy demo state is backed up, never displayed', async () => {
+test('one engine owns a fresh data directory; old state is rejected without modification', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), '引擎中文恢复-'));
   const original = { projects: [{ projectId: 'demo' }], runs: [] };
   fs.writeFileSync(path.join(dataDir, 'engine-state.json'), JSON.stringify(original));
-  const first = createEngineServer({ dataDir, managed: true }); await first.ready;
+  const rejected = createEngineServer({ dataDir, managed: true });
+  await assert.rejects(rejected.ready, { code: 'SCHEMA_UNSUPPORTED' }); await rejected.close();
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dataDir, 'engine-state.json'))), original);
+  const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), '引擎全新数据-'));
+  const first = createEngineServer({ dataDir: freshDir, managed: true }); await first.ready;
+  first.store.save();
   assert.deepEqual(first.store.listProjects(), []);
-  assert.deepEqual(JSON.parse(fs.readFileSync(first.store.state.legacyStateBackup)), original);
-  const second = createEngineServer({ dataDir, managed: true });
+  const second = createEngineServer({ dataDir: freshDir, managed: true });
   await assert.rejects(second.ready, { code: 'ENGINE_ALREADY_RUNNING' }); await second.close();
   await first.close();
-  const restarted = createEngineServer({ dataDir, managed: true }); await restarted.ready; await restarted.close();
-  const valid = JSON.parse(fs.readFileSync(path.join(dataDir, 'engine-state.json')));
+  const restarted = createEngineServer({ dataDir: freshDir, managed: true }); await restarted.ready; await restarted.close();
+  const valid = JSON.parse(fs.readFileSync(path.join(freshDir, 'engine-state.json')));
   valid.journalCursors.global = -1;
-  fs.writeFileSync(path.join(dataDir, 'engine-state.json'), JSON.stringify(valid));
-  assert.throws(() => new EngineStore(dataDir), { code: 'DATA_CORRUPT' });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'engine-state.json'))).journalCursors.global, -1);
+  fs.writeFileSync(path.join(freshDir, 'engine-state.json'), JSON.stringify(valid));
+  assert.throws(() => new EngineStore(freshDir), { code: 'DATA_CORRUPT' });
+  assert.equal(JSON.parse(fs.readFileSync(path.join(freshDir, 'engine-state.json'))).journalCursors.global, -1);
 });
