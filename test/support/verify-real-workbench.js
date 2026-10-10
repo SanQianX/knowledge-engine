@@ -13,10 +13,14 @@ async function main() {
   const project = projects.find(p => p.projectId === 'project-real-a');
   assert.ok(project?.modules.terminal.registered);
   const sessions = (await read(`/api/terminal/sessions?contextId=${encodeURIComponent(project.modules.terminal.projectId)}`)).sessions;
-  const session = sessions.find(s => s.aiProfileId === 'acceptance-model' && s.model === 'MiniMax-M3');
+  const modelFlag = process.argv.indexOf('--expected-model');
+  const expectedModel = modelFlag >= 0 ? process.argv[modelFlag + 1] : sessions.find(s => s.aiProfileId === 'acceptance-model')?.model;
+  assert.match(expectedModel || '', /^MiniMax-M3(?:$|[.-])/);
+  const session = sessions.find(s => s.aiProfileId === 'acceptance-model' && s.model === expectedModel);
   assert.ok(session, 'real selected model session must exist');
   const snapshot = await read(`/api/terminal/sessions/${session.sessionId}`);
-  const isolatedAgentConfig = process.argv.includes('--isolated');
+  const isolatedAgentConfig = environment.agentConfiguration === 'isolated control configuration';
+  if (process.argv.includes('--isolated')) assert.ok(isolatedAgentConfig, 'cannot claim isolation for an existing user configuration');
   if (isolatedAgentConfig) assert.ok(!JSON.stringify(snapshot.events).includes('claude-mem'), 'an isolated test must not import external plugin memories');
   const context = await read(`/api/terminal/sessions/${session.sessionId}/knowledge`);
   assert.equal(snapshot.session.state, 'idle', 'the real task must finish while its reusable session stays available');
