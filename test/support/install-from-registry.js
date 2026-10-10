@@ -22,9 +22,12 @@ function npm(args, preferOffline = false) {
 }
 try {
   const expected = process.argv[2];
-  assert.match(expected || '', /^\d+\.\d+\.\d+$/);
-  const latest = npm(['view', packageName, 'dist-tags.latest']).trim();
-  assert.equal(latest, expected, 'latest must point to the release before acceptance');
+  assert.match(expected || '', /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/);
+  const tagAt = process.argv.indexOf('--tag');
+  const tag = tagAt >= 0 ? process.argv[tagAt + 1] : 'latest';
+  assert.ok(['next', 'latest'].includes(tag), 'acceptance tag must be explicit next or latest');
+  const tagged = npm(['view', packageName, `dist-tags.${tag}`]).trim();
+  assert.equal(tagged, expected, `${tag} must point to the exact package before acceptance`);
   npm(['install', '--prefix', installedRoot, '--global=false', '--save-exact', '--no-audit', '--no-fund', `${packageName}@${expected}`], true);
   const core = path.join(installedRoot, 'node_modules', '@sanqianx', 'project-knowledge');
   const pkg = JSON.parse(fs.readFileSync(path.join(core, 'package.json')));
@@ -41,7 +44,7 @@ try {
   const engine = JSON.parse(fs.readFileSync(path.join(core, '_modules/knowledge-engine/package.json')));
   assert.equal(Object.keys(engine.dependencies || {}).length, 0);
   const report = {
-    schema: 'project-knowledge/installed-registry/v1', registry, packageName, version: pkg.version,
+    schema: 'project-knowledge/installed-registry/v1', registry, packageName, tag, version: pkg.version,
     installedRoot, core, integrityPassed: true, freshCache: !process.env.KB_REGISTRY_ACCEPTANCE_CACHE, distIntegrity: dist.integrity,
     modules: Object.fromEntries(Object.entries(modules).map(([key, module]) => [key, { version: module.version, directory: module.directory }])),
     engineVersion: engine.version, sdk: resolve.resolve('@anthropic-ai/claude-agent-sdk'), checkedAt: new Date().toISOString(),

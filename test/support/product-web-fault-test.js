@@ -51,6 +51,8 @@ async function main() {
     await waitFor(async () => (await getRun(timeoutSha))?.state === 'failed' && (await getRun(indexSha))?.state === 'index-pending', 'independent model and index failures', 45000);
     const timeoutRun = await getRun(timeoutSha), indexRun = await getRun(indexSha);
     assert.equal(timeoutRun.error.code, 'MODEL_TIMEOUT'); assert.equal(indexRun.error.code, 'INDEX_FAILED');
+    assert.equal(indexRun.error.details.httpStatus, 503); assert.equal(indexRun.error.details.upstreamCode, 'CONTROLLED_INDEX_OUTAGE');
+    assert.equal(indexRun.error.details.requestId, 'request-index-fixture'); assert.ok(!JSON.stringify(indexRun).includes('no-leak-key'));
     const indexFile = path.join(projects[1].knowledgePath, `changes/${indexSha.slice(0, 12)}.md`);
     assert.ok(fs.readFileSync(indexFile, 'utf8').includes(indexSha), 'promotion remains valid when indexing fails');
     const promotedBytes = fs.readFileSync(indexFile);
@@ -58,11 +60,18 @@ async function main() {
     await waitFor(() => run(`document.getElementById('activityUpdates').textContent.includes(${JSON.stringify(indexSha.slice(0, 8))}) && document.getElementById('activityUpdates').textContent.includes('索引待修复')`), 'UI reflects partial success');
     await click(`.run[data-run-id="${indexRun.runId}"] summary`);
     assert.ok(await run("document.getElementById('activityUpdates').textContent.includes('知识已更新，索引待修复')"));
+    assert.ok(await run("document.getElementById('activityUpdates').textContent.includes('CONTROLLED_INDEX_OUTAGE') && document.getElementById('activityUpdates').textContent.includes('request-index-fixture')"));
+    assert.equal(await run('window.__indexXss'), undefined); assert.equal(await run("document.querySelectorAll('#activityUpdates img, #activityUpdates script').length"), 0);
+    const indexLogs = await api('/api/logs?q=knowledge.index.failed');
+    assert.ok(indexLogs.entries.some(entry => entry.commitSha === indexSha && entry.context.httpStatus === 503));
+    const indexExport = await (await fetch(new URL('/api/logs/export?q=knowledge.index.failed', environment.url))).text();
+    assert.ok(indexExport.includes('CONTROLLED_INDEX_OUTAGE') && !indexExport.includes('no-leak-key'));
     await browser.screenshot(path.join(proof, 'index-pending-1920.png'));
     await click(`[data-retry-run="${indexRun.runId}"]`);
     await waitFor(async () => (await getRun(indexSha))?.state === 'succeeded', 'UI index-only retry', 30000);
     await waitFor(() => run("document.getElementById('activityUpdates').textContent.includes('可检索')"), 'ready feedback without reload');
     assert.ok(fs.readFileSync(indexFile).equals(promotedBytes));
+    assert.equal((await getRun(indexSha)).promotedAt, indexRun.promotedAt); assert.equal((await getRun(indexSha)).analysisRunId, indexRun.analysisRunId);
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'fault-observations.json'))).attempts[indexSha], 1, 'index repair must not re-run the model');
 
     const queuedSha = commit(0, 'acceptance-after-timeout');

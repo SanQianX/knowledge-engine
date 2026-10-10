@@ -1,0 +1,21 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+const [label, directory, command, ...args] = process.argv.slice(2);
+if (!/^[a-z0-9-]+$/.test(label || '') || !directory || !['npm', 'node'].includes(command)) throw new Error('Usage: system-suite <label> <repository> npm|node <args>');
+const proof = path.resolve(__dirname, '../../.agent-state/acceptance/system-regression'); fs.mkdirSync(proof, { recursive: true });
+const stamp = Date.now(); const logfile = path.join(proof, `${label}-${stamp}.log`);
+const output = fs.createWriteStream(logfile, { mode: 0o600 });
+const executable = process.env.KB_TEST_NODE || process.execPath;
+const cli = path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+const argv = command === 'npm' ? [cli, ...args] : args;
+const start = Date.now(); let tail = '';
+const child = spawn(executable, argv, { cwd: path.resolve(directory), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: path.dirname(executable) + path.delimiter + process.env.PATH, FORCE_COLOR: '0' } });
+for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { output.write(bytes); tail = (tail + bytes).slice(-5000); });
+child.on('error', error => { tail += error.message; });
+child.on('close', (code, signal) => output.end(() => {
+  const result = { label, command: [executable, ...argv], repository: path.resolve(directory), exitCode: code, signal, passed: code === 0, durationMs: Date.now() - start, logfile, tail };
+  const report = path.join(proof, `${label}-${stamp}.json`); fs.writeFileSync(report, JSON.stringify(result, null, 2));
+  process.stdout.write(JSON.stringify({ ...result, tail: tail.slice(-2200), report }) + '\n'); process.exitCode = code === 0 ? 0 : 1;
+}));

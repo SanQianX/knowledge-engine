@@ -35,13 +35,17 @@ const url = server => `http://127.0.0.1:${server.address().port}`;
 
 async function main() {
   const realProfile = process.env.KB_ACCEPTANCE_REAL_PROFILE_ID ? new ProfileStore({ dataDir: process.env.KB_REAL_PROFILE_DATA_DIR || path.join(os.homedir(), '.agent-terminal') }).runtimeProfile(process.env.KB_ACCEPTANCE_REAL_PROFILE_ID) : null;
-  const realEmbeddingSettings = process.env.KB_ACCEPTANCE_REAL_EMBEDDING === '1' ? JSON.parse(fs.readFileSync(process.env.KB_REAL_VECTOR_CONFIG || path.join(os.homedir(), '.vector-hub', 'config.json'), 'utf8')).settings : null;
+  const realEmbeddingSettings = process.env.KB_ACCEPTANCE_REAL_EMBEDDING === '1'
+    ? process.env.KB_REAL_PROFILE_DATA_DIR
+      ? new ProfileStore({ dataDir: process.env.KB_REAL_PROFILE_DATA_DIR }).embeddingRuntime()
+      : JSON.parse(fs.readFileSync(process.env.KB_REAL_VECTOR_CONFIG || path.join(os.homedir(), '.vector-hub', 'config.json'), 'utf8')).settings
+    : null;
   if (realEmbeddingSettings && (!realEmbeddingSettings.apiKey || !['minimax', 'openai'].includes(realEmbeddingSettings.provider))) throw new Error('REAL_EMBEDDING_CONFIGURATION_REQUIRED');
   if (realProfile) process.env.NODE_PATH = installation ? [path.join(shellPackage, 'node_modules'), path.join(installation.installedRoot, 'node_modules')].join(path.delimiter) : [path.join(family, 'claude-ai-workbench', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
   const root = process.env.KB_PRODUCT_TEST_ROOT ? path.resolve(process.env.KB_PRODUCT_TEST_ROOT) : fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
   if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('智脑桌面验收-')) throw new Error('Acceptance root must be its own temporary directory');
   // Real tests must not silently inherit unrelated user plugins or their memories.
-  if (realProfile) process.env.CLAUDE_CONFIG_DIR = path.join(root, 'agent-config');
+  if (realProfile && process.env.KB_ACCEPTANCE_USER_AGENT_CONFIG !== '1') process.env.CLAUDE_CONFIG_DIR = path.join(root, 'agent-config');
   const token = crypto.randomBytes(32).toString('hex');
   process.env.KB_MODULES_AUTOSTART = '0'; process.env.KB_MODULES_REGISTER = '1';
   process.env.KB_DATA_DIR = path.join(root, 'shell');
@@ -67,7 +71,7 @@ async function main() {
   const vectors = http.createServer((req, res) => {
     if (faultScenarios && req.method === 'POST' && req.url === '/api/sync' && observations.syncFailures === 0) {
       observations.syncFailures++; recordFaults(); req.resume();
-      res.writeHead(503, { 'Content-Type': 'application/json' }); res.end('{"ok":false,"error":"CONTROLLED_INDEX_OUTAGE"}'); return;
+      res.writeHead(503, { 'Content-Type': 'application/json', 'x-request-id': 'request-index-fixture' }); res.end(JSON.stringify({ ok: false, error: { code: 'CONTROLLED_INDEX_OUTAGE', message: '<img src=x onerror=window.__indexXss=1> CONTROLLED_INDEX_OUTAGE apiKey="no-leak-key"' } })); return;
     }
     vectorHandler(req, res);
   }); await listen(vectors);
@@ -106,7 +110,7 @@ async function main() {
     await new Promise(resolve => probe.close(resolve));
   }
   const shell = await startServer({ runtime: shellRuntime, rootDir: shellPackage, port: shellPort, host: '127.0.0.1' });
-  const details = { pid: process.pid, url: `http://127.0.0.1:${shell.port}`, root, repositories, knowledgeRoot: path.join(root, 'knowledge'), installationSource: installation?.schema || 'source checkouts', installationReport: process.env.KB_PRODUCT_INSTALLATION_REPORT || null, runtimeRoots: { shell: shellPackage, engine: installation ? path.join(shellPackage, '_modules/knowledge-engine') : path.join(family, 'knowledge-engine'), workbench: workbenchPackage, vector: vectorPackage, events: bridgePackage }, modules: { engine: url(engine.server), workbench: url(workbench.server), events: url(events), vectors: url(vectors) }, model: realProfile ? realEmbeddingSettings ? 'real Agent and real embeddings; original provider stores are read-only' : 'real Agent; embedding remains a controlled substitute' : 'controlled substitute; not real Agent acceptance' };
+  const details = { pid: process.pid, url: `http://127.0.0.1:${shell.port}`, root, repositories, knowledgeRoot: path.join(root, 'knowledge'), agentConfiguration: realProfile ? process.env.KB_ACCEPTANCE_USER_AGENT_CONFIG === '1' ? 'existing user configuration' : 'isolated control configuration' : 'test double', installationSource: installation?.schema || 'source checkouts', installationReport: process.env.KB_PRODUCT_INSTALLATION_REPORT || null, runtimeRoots: { shell: shellPackage, engine: installation ? path.join(shellPackage, '_modules/knowledge-engine') : path.join(family, 'knowledge-engine'), workbench: workbenchPackage, vector: vectorPackage, events: bridgePackage }, modules: { engine: url(engine.server), workbench: url(workbench.server), events: url(events), vectors: url(vectors) }, model: realProfile ? realEmbeddingSettings ? 'real Agent and real embeddings; original provider stores are read-only' : 'real Agent; embedding remains a controlled substitute' : 'controlled substitute; not real Agent acceptance' };
   AtomicFile.writeJsonAtomic(path.join(root, 'acceptance-environment.json'), details);
   process.stdout.write(JSON.stringify(details) + '\n');
   let stopped = false;
