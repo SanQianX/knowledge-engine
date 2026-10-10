@@ -29,6 +29,7 @@ class EngineCoordinator extends EventEmitter {
     this.concurrency = Math.max(1, Math.min(2, Number(options.concurrency) || 2));
     this.active = new Map();
     this.jobs = new Set();
+    this.journalFailures = new Map();
     this.initializeHook = options.initializeHook;
     this.profiles = new Map();
     const diagnostics = createDiagnostics({ dataDir: store.dataDir, secrets: () => [...this.profiles.values()].flatMap(profile => [profile.apiKey, profile.authToken]) });
@@ -124,34 +125,58 @@ class EngineCoordinator extends EventEmitter {
     this.draining = true;
     try {
       await this.bridge.registerConsumer('knowledge-engine', { journals: ['*'] });
-      for (const journal of await this.bridge.listJournals()) {
+      const journals = await this.bridge.listJournals();
+      this.journalFailures.delete('connection');
+      for (const journal of journals) {
         if (this.closed) break;
-        const cursor = this.store.state.journalCursors[journal.journalId] || 0;
-        const events = await this.bridge.readEvents({ journalId: journal.journalId, fromSequence: cursor + 1, limit: 100 });
-        let through = cursor;
-        for (const event of events) {
-          if (this.closed) break;
-          const p = this.store.listProjects().find(p => p.enabled !== false && ((journal.journalId !== 'global' && p.journalId === journal.journalId)
-            || ((journal.journalId === 'global' || !p.journalId) && event.repoIdentity?.workspaceRoot && this.layout.pathsEqual(p.repoPath, event.repoIdentity.workspaceRoot))));
-          if (p) {
-            if (event.schema === 'ai-coding-event/v1' && ['user_prompt', 'assistant_response'].includes(event.eventType)) await this.conversations.appendBridgeEvent(p.projectId, { ...event, journalId: journal.journalId });
-            if (event.schema === 'git-commit-boundary/v1' && /^[a-f0-9]{7,64}$/i.test(event.commitSha || '')) {
-              if (!fs.existsSync(this.layout.getProjectCommitBoundaryPath(p.projectId, event.commitSha))) this.conversations.writeBoundary(p.projectId, { ...event, journalId: journal.journalId, parentShas: event.parents || [], bridgeCursorAtCommit: event.sequence, journalSequence: event.sequence, operationId: event.operationId || `bridge-${journal.journalId}-${event.sequence}`, committedAt: event.committedAt || event.capturedAt });
-              const baseline = p.runtime.lastAnalyzedCommit || p.trackingStartCommit;
-              const completed = this.reconciler.processingLedger.read(p.projectId, event.commitSha);
-              const historical = baseline && (baseline === event.commitSha || (await execGit(p.repoPath, ['merge-base', '--is-ancestor', event.commitSha, baseline])).ok);
-              if (!completed && !historical && this.store.getProject(p.projectId)?.enabled) this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
-            }
-          }
-          through = event.sequence;
+        try {
+          await this.consumeJournal(journal);
+          if (this.journalFailures.delete(journal.journalId)) await this.diagnostics.info('knowledge.journal.recovered', '项目事件消费已恢复。', { phase: 'consuming', context: { journalId: journal.journalId } });
+        } catch (error) {
+          // Never ACK invalid evidence; a project fault must not starve other journals.
+          await this.recordJournalFailure(journal.journalId, error);
         }
-        // All evidence projections and queued jobs are durable before ACK.
-        if (through > cursor) this.store.setJournalCursor(journal.journalId, through);
-        await this.bridge.ackConsumerCursor('knowledge-engine', through, { journalId: journal.journalId });
       }
-      this.journalError = null;
-    } catch { this.journalError = '事件日志连接异常，已保留游标并等待恢复。'; }
-    finally { this.draining = false; }
+      for (const id of this.journalFailures.keys()) if (!journals.some(j => j.journalId === id)) this.journalFailures.delete(id);
+    } catch (error) { await this.recordJournalFailure('connection', error); }
+    finally {
+      this.journalError = this.journalFailures.size ? '事件消费异常，未消费证据与游标已保留，请查看诊断日志。' : null;
+      this.draining = false;
+    }
+  }
+  async recordJournalFailure(journalId, error) {
+    const context = error.journalContext || {};
+    const failure = { journalId, sequence: context.sequence ?? null, projectId: context.projectId || null, code: error.code || 'JOURNAL_FAILED', message: this.safeMessage(error.message) };
+    if (JSON.stringify(this.journalFailures.get(journalId)) !== JSON.stringify(failure)) {
+      this.journalFailures.set(journalId, failure);
+      await this.diagnostics.error('knowledge.journal.failed', '事件消费失败，已保留未确认的证据与游标。', { projectId: failure.projectId, phase: 'consuming', error, context: { ...failure, source: context.source || null } });
+    }
+  }
+  async consumeJournal(journal) {
+    const cursor = this.store.state.journalCursors[journal.journalId] || 0;
+    const events = await this.bridge.readEvents({ journalId: journal.journalId, fromSequence: cursor + 1, limit: 100 });
+    let through = cursor;
+    for (const event of events) {
+      if (this.closed) break;
+      const p = this.store.listProjects().find(p => p.enabled !== false && ((journal.journalId !== 'global' && p.journalId === journal.journalId)
+        || ((journal.journalId === 'global' || !p.journalId) && event.repoIdentity?.workspaceRoot && this.layout.pathsEqual(p.repoPath, event.repoIdentity.workspaceRoot))));
+      try {
+        if (p) {
+          if (event.schema === 'ai-coding-event/v1' && ['user_prompt', 'assistant_response'].includes(event.eventType)) await this.conversations.appendBridgeEvent(p.projectId, { ...event, journalId: journal.journalId });
+          if (event.schema === 'git-commit-boundary/v1' && /^[a-f0-9]{7,64}$/i.test(event.commitSha || '')) {
+            if (!fs.existsSync(this.layout.getProjectCommitBoundaryPath(p.projectId, event.commitSha))) this.conversations.writeBoundary(p.projectId, { ...event, journalId: journal.journalId, parentShas: event.parents || [], bridgeCursorAtCommit: event.sequence, journalSequence: event.sequence, operationId: event.operationId || `bridge-${journal.journalId}-${event.sequence}`, committedAt: event.committedAt || event.capturedAt });
+            const baseline = p.runtime.lastAnalyzedCommit || p.trackingStartCommit;
+            const completed = this.reconciler.processingLedger.read(p.projectId, event.commitSha);
+            const historical = baseline && (baseline === event.commitSha || (await execGit(p.repoPath, ['merge-base', '--is-ancestor', event.commitSha, baseline])).ok);
+            if (!completed && !historical && this.store.getProject(p.projectId)?.enabled) this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
+          }
+        }
+      } catch (error) { error.journalContext = { projectId: p?.projectId, sequence: event.sequence, source: event.source }; throw error; }
+      through = event.sequence;
+    }
+    // All evidence projections and queued jobs are durable before ACK.
+    if (through > cursor) this.store.setJournalCursor(journal.journalId, through);
+    await this.bridge.ackConsumerCursor('knowledge-engine', through, { journalId: journal.journalId });
   }
   pump() {
     if (this.closed || !this.executionEnabled) return;

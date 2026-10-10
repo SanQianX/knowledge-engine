@@ -100,7 +100,7 @@ function createEngineServer(options = {}) {
 }
 
 async function api(method, pathname, search, body, store, coordinator, ctx) {
-  if (method === 'GET' && pathname === '/api/health') return { name: 'knowledge-engine', version: VERSION, dataSchemaVersion: store.state.schemaVersion, debug: ctx.debug, executionEnabled: coordinator.executionEnabled, uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000), dataDir: ctx.dataDir, counts: { projects: store.state.projects.length, runs: store.state.runs.length, running: coordinator.active.size }, journal: { cursor: store.state.cursor, cursors: store.state.journalCursors, consumer: 'knowledge-engine', enabled: coordinator.consume, error: coordinator.journalError || null }, concurrency: coordinator.concurrency };
+  if (method === 'GET' && pathname === '/api/health') return { name: 'knowledge-engine', version: VERSION, dataSchemaVersion: store.state.schemaVersion, debug: ctx.debug, executionEnabled: coordinator.executionEnabled, uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000), dataDir: ctx.dataDir, counts: { projects: store.state.projects.length, runs: store.state.runs.length, running: coordinator.active.size }, journal: { cursor: store.state.cursor, cursors: store.state.journalCursors, consumer: 'knowledge-engine', enabled: coordinator.consume, error: coordinator.journalError || null, failures: [...coordinator.journalFailures.values()] }, concurrency: coordinator.concurrency };
   if (method === 'GET' && pathname === '/api/projects') return { projects: store.listProjects() };
   if (method === 'GET' && pathname === '/api/memories') return { memories: coordinator.memories.list(Object.fromEntries(search)) };
   const memoryMatch = pathname.match(/^\/api\/memories\/([^/]+)$/);

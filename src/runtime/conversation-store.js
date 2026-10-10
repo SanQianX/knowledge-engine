@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { SCHEMAS, DomainError, validateProjectId } = require('./contracts');
 const AtomicFile = require('./atomic-file');
 
-const SOURCES = new Set(['claude-code', 'codex', 'opencode']);
+const SOURCES = new Set(['claude-code', 'codex', 'opencode', 'zcode']);
 const ROLES = new Set(['user', 'assistant', null]);
 const SNAPSHOT_STATUSES = new Set(['available', 'no-new-user-prompt', 'unavailable', 'ambiguous']);
 const BINDING_KINDS = new Set(['direct', 'shared-spanning', 'explicit']);
