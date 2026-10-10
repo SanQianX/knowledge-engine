@@ -180,12 +180,17 @@ async function main() {
     await waitFor(() => run("document.getElementById('unbindDialog').open"), 'real unbind confirmation dialog');
     await click('[data-close="unbindDialog"]');
     assert.equal((await api('/api/projects/aggregated')).projects.length, 2, 'cancel must not remove a project');
+    await run("window.__holdRoute='/api/projects/aggregated'; window.dispatchEvent(new Event('online'));");
+    await waitFor(() => run('window.__heldRequests.length > 0'), 'hold a pre-unbind registry response');
     await click('[data-action="unbind"]'); await click('#confirmUnbind');
     await waitFor(async () => (await api('/api/projects/aggregated')).projects.length === 1, 'four-module keep-data unbind');
     assert.ok(fs.existsSync(projects[1].workspacePath));
     assert.ok(fs.existsSync(path.join(projects[1].knowledgePath, `changes/${commits[1].sha.slice(0, 12)}.md`)));
     assert.equal((await api('/api/engine/projects')).projects.length, 1);
     await waitFor(() => run("document.getElementById('projectSelect').options.length === 1 && !document.getElementById('unbindDialog').open"), 'project disappears from UI without reload');
+    await run('window.__heldRequests.splice(0).forEach(release=>release());');
+    await waitFor(() => run("document.getElementById('projectSelect').options.length === 1"), 'late registry cannot restore an unbound project');
+    await browser.screenshot(path.join(proof, 'unbind-1920-dark.png'));
     assert.equal(browser.exceptions.length, 0, JSON.stringify(browser.exceptions));
     fs.mkdirSync(proof, { recursive: true });
     fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), installationSource: environment.installationSource, runtimeRoots: environment.runtimeRoots, viewport: '1920x1080', model: 'controlled substitute', embedding: 'controlled substitute', commits, assertions: ['UI imports and four-module wiring', 'true Git Hook to live UI', 'native streamed message/navigation/abort', 'project drafts/history/citations', 'long commit citation wrapping', 'late search and document response isolation', 'domain scope', 'memory edit/confirm/ignore and disk retrieval', 'native bridge events and engine diagnostics', 'four stable iframe identities', 'single progress subscription', 'four uniform embedded themes', 'diagnostic subscription cleanup', 'durable reload', 'four-module keep-data unbind'] }, null, 2));

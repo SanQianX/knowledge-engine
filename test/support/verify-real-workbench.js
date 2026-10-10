@@ -19,7 +19,9 @@ async function main() {
   const context = await read(`/api/terminal/sessions/${session.sessionId}/knowledge`);
   assert.equal(snapshot.session.state, 'idle', 'the real task must finish while its reusable session stays available');
   assert.ok(context.references.length && context.references.every(ref => ref.projectId !== 'project-real-b'));
-  const sha = '32f655e019db49fdb9b2a51ecbca50c4d0069564';
+  const commits = JSON.parse(fs.readFileSync(path.join(environment.root, 'real-agent-acceptance.json'))).commits;
+  const sha = commits.find(commit => commit.projectId === project.projectId && commit.state === 'succeeded')?.commitSha;
+  assert.match(sha || '', /^[a-f0-9]{40}$/);
   const deltas = snapshot.events.filter(e => e.type === 'claude/text-delta');
   const answers = snapshot.events.filter(e => ['claude/assistant', 'claude/message', 'claude/result'].includes(e.type));
   assert.ok(deltas.length > 1, 'real answer must have incremental text events');
@@ -27,7 +29,7 @@ async function main() {
   assert.ok(snapshot.events.some(e => e.type === 'claude/result' && e.isError === false), 'the real Agent must return a successful result');
   assert.equal(snapshot.events.at(-1).type, 'claude/turn-end', 'the final turn event must reach the backend snapshot');
   assert.ok(context.references.some(ref => ref.commitSha === sha));
-  const report = { mode: 'real Workbench Agent; original task used controlled embedding; persisted answer reverified', verifiedAt: new Date().toISOString(), projectId: project.projectId, sessionId: session.sessionId, model: session.model, eventCount: snapshot.events.length, deltaCount: deltas.length, citedCommit: sha, references: context.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha })), uiEvidence: ['real-workbench-desktop.jpg', 'real-workbench-dark.jpg'], passed: true };
+  const report = { mode: environment.model, installationSource: environment.installationSource, verifiedAt: new Date().toISOString(), projectId: project.projectId, sessionId: session.sessionId, model: session.model, eventCount: snapshot.events.length, deltaCount: deltas.length, citedCommit: sha, references: context.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha })), passed: true };
   AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-workbench-acceptance.json'), report);
   process.stdout.write(`REAL_WORKBENCH_ACCEPTANCE_PASSED deltas=${deltas.length}\n`);
 }

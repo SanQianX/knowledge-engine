@@ -27,6 +27,9 @@ test('fresh startup has no upgrade recovery, queued unbind cancels without model
   t.after(() => engine.close());
   const base = `http://127.0.0.1:${engine.server.address().port}`;
   assert.equal(engine.store.state.runs.length, 0);
+  assert.equal((await fetch(base + '/api/runtime-auth')).status, 403);
+  assert.equal((await fetch(base + '/api/runtime-auth', { headers: { Authorization: 'Bearer fresh-test-token', Origin: base } })).status, 403);
+  assert.equal((await fetch(base + '/api/runtime-auth', { headers: { Authorization: 'Bearer fresh-test-token' } })).status, 200);
   assert.equal((await fetch(base + '/api/migrate', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer fresh-test-token' }, body: '{}' })).status, 404);
   const project = { projectId: 'project-remove', repoPath: path.join(root, 'code'), knowledgePath: path.join(root, 'knowledge') };
   fs.mkdirSync(project.repoPath); fs.mkdirSync(project.knowledgePath);
