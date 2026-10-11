@@ -11,15 +11,17 @@ const { launchCdpBrowser, waitFor } = require('../../../project-knowledge-base/_
 async function main() {
   const address = new URL(process.argv[2]); assert.equal(address.hostname, '127.0.0.1');
   const dataDir = path.join(os.homedir(), '.project-knowledge-v5');
-  const runId = 'run-431c10a3-e32d-4d4e-a84a-f2d0c6afe81a';
-  const commitSha = '530919e81845b803ef6d61821dd276610279d526';
+  const flag = name => { const index = process.argv.indexOf(name); return index < 0 ? null : process.argv[index + 1]; };
+  const runId = flag('--run-id') || 'run-431c10a3-e32d-4d4e-a84a-f2d0c6afe81a';
+  const commitSha = flag('--expected-commit') || '530919e81845b803ef6d61821dd276610279d526';
+  assert.match(runId, /^run-[a-f0-9-]+$/); assert.match(commitSha, /^[a-f0-9]{40}$/);
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, 'knowledge-engine/engine-state.json')));
   const before = persisted.runs.find(run => run.runId === runId);
   assert.equal(before?.commitSha, commitSha); assert.ok(['failed', 'queued', 'running', 'succeeded'].includes(before.state));
   const project = persisted.projects.find(item => item.projectId === before.projectId);
   const proof = path.resolve(__dirname, '../../.agent-state/acceptance/existing-v5', `maintenance-recovery-${Date.now()}`);
   fs.mkdirSync(proof, { recursive: true });
-  const report = { passed: false, originalDefect: 'PROJECT_BUSY on legitimate source development', before, commitSha, runId, startedAt: new Date().toISOString() };
+  const report = { passed: false, originalFailure: before.error || null, before, commitSha, runId, startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(path.join(proof, 'result.json'), report);
   const read = async route => { const response = await fetch(new URL(route, address), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, route); return response.json(); };
   const identity = await read('/api/runtime/identity');
@@ -37,7 +39,7 @@ async function main() {
     await browser.screenshot(path.join(proof, 'before-1920.png'));
     const current = (await read('/api/engine/runs')).runs.find(run => run.runId === runId);
     if (current.state === 'failed') {
-      assert.equal(current.error?.code, 'PROJECT_BUSY');
+      assert.ok(['PROJECT_BUSY', 'WORKER_STOPPED'].includes(current.error?.code), 'retry only the reproduced defect or explicitly interrupted shutdown task');
       report.retryEntry = 'actual UI retry of the original failed run'; save();
       await evaluate(`document.querySelector('[data-retry-run="${runId}"]').click()`);
     } else report.retryEntry = 'original run already recovered or retrying; do not create another run';
