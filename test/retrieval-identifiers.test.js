@@ -61,12 +61,17 @@ test('known commit SHA and prefix cannot be crowded out by unrelated vector chun
     health.index = 'ok';
     for (const candidate of candidates.values()) { candidate.indexScore = candidate.entryId === 'changes/old.md' ? 100000 : 0; candidate.indexChannels = ['vector-hub']; }
   };
-  for (const query of [newSha, newSha.slice(0, 8), newSha.toUpperCase()]) {
+  fs.mkdirSync(path.join(knowledgePath, 'dev-conversations'));
+  fs.writeFileSync(path.join(knowledgePath, 'dev-conversations', 'raw.md'), `# Raw transcript\n\nExplain knowledge for submission ${newSha}.\n`.repeat(20));
+  for (const query of [newSha, newSha.slice(0, 8), newSha.toUpperCase(), `Explain knowledge for submission ${newSha}.`, `提交${newSha}的知识写入边界`, `参考 ${newSha.slice(0, 8)} 的知识`]) {
     const result = await retrieval.search({ projectId: project.projectId, query, limit: 1 });
     assert.equal(result.results.length, 1); assert.equal(result.results[0].commitSha, newSha); assert.ok(result.results[0].match_channels.includes('exact-commit'));
   }
   const old = await retrieval.search({ projectId: project.projectId, query: oldSha, limit: 30 });
   assert.ok(old.results.length); assert.ok(old.results.every(row => row.entry_id === 'changes/old.md'), 'replaced README cannot be attributed to its former commit');
+  const compared = await retrieval.search({ projectId: project.projectId, query: `Compare ${oldSha} and ${newSha}`, limit: 30 });
+  assert.deepEqual([...new Set(compared.results.map(row => row.commitSha))].sort(), [oldSha, newSha].sort());
+  assert.ok(compared.results.every(row => !row.entry_id.startsWith('dev-conversations/')), 'raw transcripts containing a SHA are not promoted commit facts');
   const ordinary = await retrieval.search({ projectId: project.projectId, query: 'semantic historical knowledge', limit: 1 });
   assert.equal(ordinary.results[0].entry_id, 'changes/old.md'); assert.ok(!ordinary.results[0].match_channels.includes('exact-commit'));
 });
