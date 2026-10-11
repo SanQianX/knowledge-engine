@@ -50,7 +50,8 @@ async function main() {
         const events = snapshot.events;
         const failure = events.find(e => e.type === 'claude/error' || (e.type === 'claude/result' && e.isError));
         if (failure) throw new Error(String(failure.message || failure.result || 'client failed').slice(0, 1200));
-        if (snapshot.session.state === 'idle' && events.some(e => e.type === 'claude/result' && e.isError === false) && events.at(-1)?.type === 'claude/turn-end') break;
+        const last = events.at(-1);
+        if (snapshot.session.state === 'idle' && events.some(e => e.type === 'claude/result' && e.isError === false) && (last?.type === 'claude/turn-end' || last?.type === 'claude/state' && last.state === 'idle')) break;
         await new Promise(resolve => setTimeout(resolve, 1500));
       }
       assert.equal(snapshot.session.state, 'idle', 'client task must actually complete');
