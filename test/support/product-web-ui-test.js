@@ -97,7 +97,7 @@ async function main() {
     await browser.screenshot(path.join(proof, 'activity-1920-light.png'));
 
     await select(projects[0].projectId); await click('[data-view="work"]');
-    await waitFor(() => frame('workFrame', "document.getElementById('project-list').textContent.includes('测试项目 A') && !!document.getElementById('chat-input')"), 'native workbench ready and selected');
+    await waitFor(() => frame('workFrame', "document.getElementById('project-list').textContent.includes('测试项目 A') && !!document.getElementById('chat-input') && !document.getElementById('view-terminal').inert"), 'native workbench ready and selected');
     await waitFor(() => frame('workFrame', "!document.getElementById('btn-model').disabled"), 'workbench capabilities loaded');
     await frame('workFrame', "document.getElementById('btn-model').click()");
     await waitFor(() => frame('workFrame', "[...document.querySelectorAll('#pop-model button')].some(button=>button.textContent.includes('controlled-model'))"), 'controlled profile menu');
