@@ -16,7 +16,8 @@ async function main() {
   const modelFlag = process.argv.indexOf('--expected-model');
   const expectedModel = modelFlag >= 0 ? process.argv[modelFlag + 1] : sessions.find(s => s.aiProfileId === 'acceptance-model')?.model;
   assert.match(expectedModel || '', /^MiniMax-M3(?:$|[.-])/);
-  const session = sessions.find(s => s.aiProfileId === 'acceptance-model' && s.model === expectedModel);
+  const sessionFlag = process.argv.indexOf('--session-id');
+  const session = sessions.find(s => s.aiProfileId === 'acceptance-model' && s.model === expectedModel && (sessionFlag < 0 || s.sessionId === process.argv[sessionFlag + 1]));
   assert.ok(session, 'real selected model session must exist');
   const snapshot = await read(`/api/terminal/sessions/${session.sessionId}`);
   const isolatedAgentConfig = environment.agentConfiguration === 'isolated control configuration';

@@ -13,6 +13,10 @@ async function main() {
   assert.ok(path.basename(environment.root).startsWith('智脑桌面验收-') && environment.model.startsWith('real Agent'));
   const root = environment.repositories[0];
   assert.equal(path.dirname(root), environment.root);
+  const roundAt = process.argv.indexOf('--round');
+  const round = roundAt < 0 ? '' : process.argv[roundAt + 1];
+  if (roundAt >= 0 && !/^[a-z][a-z0-9-]{0,40}$/.test(round || '')) throw new Error('INVALID_ACCEPTANCE_ROUND');
+  const stem = `secondary-policy${round ? `-${round}` : ''}`;
   const proofFile = path.join(environment.root, `real-secondary-development-${Date.now()}.json`);
   const { redactValue } = require(path.join(environment.runtimeRoots.shell, '_site/lib/structured-logger'));
   const { ProfileStore } = require(path.join(environment.runtimeRoots.workbench, 'packages/server/lib/profile-store'));
@@ -31,12 +35,12 @@ async function main() {
     const prior = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.state === 'succeeded');
     assert.ok(prior?.commitSha);
     proof.sourceCommit = prior.commitSha; proof.projectId = project.projectId;
-    const files = ['secondary-policy.js', 'secondary-policy.test.js'];
+    const files = [`${stem}.js`, `${stem}.test.js`];
     assert.ok(files.every(file => !fs.existsSync(path.join(root, file))), 'do not overwrite an earlier acceptance result');
     const created = await api('/api/terminal/sessions', { context: { contextId: project.modules.terminal.projectId, workspaceRef: project.modules.terminal.projectId }, agentId: 'claude-code', aiProfileId: 'acceptance-model', permissionMode: 'bypassPermissions' });
     sessionId = created.session.sessionId; proof.sessionId = sessionId;
     const cli = path.join(environment.runtimeRoots.shell, 'bin/project-knowledge-kb.js').replace(/\\/g, '/');
-    proof.rawPrompt = `在当前受控测试仓库完成一次真实二次开发。先实际调用终端工具执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，读取生成的知识，不能仅凭此提示猜测知识。基于检索到的单写者约束，仅新增 secondary-policy.js 和 secondary-policy.test.js：CommonJS 导出 isKnowledgeWriter(owner)，只有 owner 为 engine-promotion 时返回 true，其他值返回 false；源文件注释引用实际知识 entry_id 和完整 commitSha。测试使用 Node 内置 assert，检查真/假两种情况，运行 node secondary-policy.test.js 并输出 SECONDARY_POLICY_OK。不要修改其他文件、安装依赖、读取凭据或自行提交。最终回答引用实际检索依据和测试结果。`;
+    proof.rawPrompt = `在当前受控测试仓库完成一次真实二次开发。先实际调用终端工具执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，读取生成的知识，不能仅凭此提示猜测知识。基于检索到的单写者约束，仅新增 ${files[0]} 和 ${files[1]}：CommonJS 导出 isKnowledgeWriter(owner)，只有 owner 为 engine-promotion 时返回 true，其他值返回 false；源文件注释引用实际知识 entry_id 和完整 commitSha。测试使用 Node 内置 assert，检查真/假两种情况，运行 node ${files[1]} 并输出 SECONDARY_POLICY_OK。不要修改其他文件、安装依赖、读取凭据或自行提交。最终回答引用实际检索依据和测试结果。`;
     save(); await api(`/api/terminal/sessions/${sessionId}/input`, { text: proof.rawPrompt });
     const taskDeadline = Date.now() + 240000;
     let snapshot;
@@ -51,7 +55,7 @@ async function main() {
     const tools = snapshot.events.filter(e => ['claude/tool-use', 'claude/tool-result'].includes(e.type));
     const readAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes('project-knowledge-kb.js'));
     const evidenceAt = tools.findIndex(e => e.type === 'claude/tool-result' && JSON.stringify(e).includes('hybrid+markdown-truth') && JSON.stringify(e).includes(prior.commitSha));
-    const writeAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes('secondary-policy.js') && !JSON.stringify(e).includes('project-knowledge-kb.js'));
+    const writeAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes(files[0]) && !JSON.stringify(e).includes('project-knowledge-kb.js'));
     assert.ok(readAt >= 0 && evidenceAt > readAt && writeAt > evidenceAt, 'actual retrieval must precede code changes');
     assert.deepEqual(git(['status', '--porcelain']).split('\n').map(line => line.slice(3)).sort(), files.slice().sort());
     const policy = require(path.join(root, files[0]));
