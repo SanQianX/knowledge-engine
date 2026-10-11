@@ -37,17 +37,28 @@ function snapshot(dataDir, core) {
     runs: state.runs.map(run => ({ runId: run.runId, projectId: run.projectId, commitSha: run.commitSha, state: run.state, indexState: run.indexState, promotedAt: run.promotedAt, analysisRunId: run.analysisRunId, indexAttempts: run.indexAttempts, knowledgeHashes: Object.fromEntries((run.staging?.operations || []).filter(op => op.operation !== 'delete').map(op => [op.path, hash(path.join(state.projects.find(project => project.projectId === run.projectId).knowledgePath, op.path))])) })),
   };
 }
-function verify(before, after) {
+function verify(before, after, { frozen = false } = {}) {
   assert.equal(before.dataDir, after.dataDir);
+  if (frozen) assert.ok(before.runs.every(run => run.state === 'succeeded'), 'freeze an idle, fully indexed runtime before upgrade');
   for (const project of before.projects) {
     const current = after.projects.find(item => item.projectId === project.projectId);
     assert.ok(current, 'existing project must not disappear');
     for (const key of ['repoPath', 'knowledgePath', 'brainId', 'domainId', 'trackingStartCommit']) assert.equal(current[key], project[key], `${project.projectId} ${key}`);
-    for (const item of project.knowledgeFiles) assert.ok(fs.existsSync(item.file), 'existing knowledge must not be deleted by upgrade');
+    for (const item of project.knowledgeFiles) {
+      assert.ok(fs.existsSync(item.file), 'existing knowledge must not be deleted by upgrade');
+      if (frozen) assert.equal(hash(item.file), item.sha256, `upgrade changed existing knowledge: ${item.file}`);
+    }
   }
   for (const item of before.protectedFiles) assert.equal(hash(item.file), item.sha256, `protected configuration changed: ${item.file}`);
-  for (const item of before.historyFiles) assert.ok(fs.existsSync(item.file), `history disappeared: ${item.file}`);
-  for (const old of before.runs) assert.ok(after.runs.some(run => run.runId === old.runId && run.commitSha === old.commitSha), 'existing run history must remain');
+  for (const item of before.historyFiles) {
+    assert.ok(fs.existsSync(item.file), `history disappeared: ${item.file}`);
+    if (frozen) assert.equal(hash(item.file), item.sha256, `upgrade rewrote existing history: ${item.file}`);
+  }
+  for (const old of before.runs) {
+    const current = after.runs.find(run => run.runId === old.runId && run.commitSha === old.commitSha);
+    assert.ok(current, 'existing run history must remain');
+    if (frozen) for (const key of ['state', 'indexState', 'promotedAt', 'analysisRunId', 'indexAttempts']) assert.equal(current[key], old[key], `upgrade replayed completed maintenance: ${old.runId} ${key}`);
+  }
 }
 if (require.main === module) {
   const [mode, directory, core, report] = process.argv.slice(2);
@@ -57,7 +68,8 @@ if (require.main === module) {
   if (mode === 'record') AtomicFile.writeJsonAtomic(report, { schema: 'existing-v5-acceptance/v1', before: current });
   else {
     const result = JSON.parse(fs.readFileSync(report));
-    verify(result.before, current); result.after = current; result.preservationPassed = true;
+    const frozen = process.argv.includes('--frozen');
+    verify(result.before, current, { frozen }); result.after = current; result.preservationPassed = true; result.frozenBytesVerified = frozen;
     AtomicFile.writeJsonAtomic(report, result);
   }
   console.log(JSON.stringify({ mode, version: current.version, projects: current.projects.length, historyFiles: current.historyFiles.length, report }));
