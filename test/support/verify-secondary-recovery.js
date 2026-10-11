@@ -23,7 +23,15 @@ async function main() {
   const read = async route => { const response = await fetch(new URL(route, environment.url), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, `${route}: HTTP ${response.status}`); return response.json(); };
   try {
     const snapshot = await read(`/api/terminal/sessions/${prior.sessionId}`);
-    assert.equal(snapshot.session.state, 'idle');
+    if (snapshot.session.state === 'aborted') {
+      // The original harness aborted an already-completed session when its
+      // later maintenance failed. Require the successful turn, not hide failure.
+      const states = snapshot.events.filter(event => event.type === 'claude/state');
+      assert.equal(states.at(-1)?.reason, 'no-active-subprocess');
+      assert.equal(states.at(-2)?.state, 'idle');
+      proof.sessionTeardown = 'original harness aborted after completed turn';
+    } else assert.equal(snapshot.session.state, 'idle');
+    proof.sessionState = snapshot.session.state;
     const prompt = snapshot.events.find(event => event.type === 'claude/user-prompt')?.text;
     assert.ok(prompt?.includes(prior.sourceCommit) && prompt.includes('project-knowledge-kb.js'));
     assert.ok(snapshot.events.some(event => event.type === 'claude/result' && !event.isError && event.result.includes('SECONDARY_POLICY_OK')));

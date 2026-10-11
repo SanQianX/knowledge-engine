@@ -34,6 +34,18 @@ async function main() {
   try {
     await browser.setViewport(1920, 1080);
     await waitFor(() => browser.evaluate("!!document.getElementById('projectSelect').options.length"), 'real project list');
+    const memories = (await read('/api/engine/memories')).memories;
+    const candidate = memories.find(memory => memory.status === 'candidate');
+    if (candidate) {
+      await browser.evaluate("document.querySelector('[data-view=memory]').click();document.querySelector('[data-memory-tab=candidate]').click()");
+      await waitFor(() => browser.evaluate(`!!document.querySelector('[data-memory-action=confirm][data-memory-id="${candidate.id}"]')`), 'actual evidence-backed memory candidate');
+      await browser.evaluate(`document.querySelector('[data-memory-action=confirm][data-memory-id="${candidate.id}"]').click()`);
+      await waitFor(async () => (await read('/api/engine/memories')).memories.some(memory => memory.id === candidate.id && memory.status === 'confirmed'), 'confirmation persists');
+    }
+    const sharedBefore = (await read('/api/engine/snapshot')).sharedScopes.map(scope => ({ id: scope.id, knowledgePath: scope.knowledgePath }));
+    const sharedFiles = Object.fromEntries(sharedBefore.map(scope => [scope.id, fingerprint(scope.knowledgePath)]));
+    const confirmed = (await read('/api/engine/memories')).memories.filter(memory => memory.status === 'confirmed');
+    assert.ok(confirmed.length, 'storage acceptance must include actual confirmed memory');
     await browser.evaluate("document.getElementById('openSystem').click()");
     await waitFor(() => browser.evaluate("!document.getElementById('systemDrawer').hidden"), 'system settings');
     await browser.evaluate(`document.getElementById('knowledgeRoot').value=${JSON.stringify(knowledgeRoot)};document.getElementById('saveBrainSettings').click()`);
@@ -41,6 +53,9 @@ async function main() {
     await waitFor(async () => !(await read('/api/vectorhub/rebuild/status')).running, 'real vector rebuild', 180000);
     const rebuild = await read('/api/vectorhub/rebuild/status'); assert.deepEqual(rebuild.errors, []);
     const actual = (await read('/api/vectorhub/settings')).settings.rootPath; assert.equal(actual, target);
+    const brain = await read('/api/brain'); assert.equal(brain.configuration.scopes, true); assert.equal(brain.configuration.scopeStatus.status, 'ready');
+    assert.deepEqual((await read('/api/engine/snapshot')).sharedScopes.map(scope => ({ id: scope.id, knowledgePath: scope.knowledgePath })), sharedBefore);
+    for (const scope of sharedBefore) assert.deepEqual(fingerprint(scope.knowledgePath), sharedFiles[scope.id], 'shared knowledge must retain its bound directory and bytes');
     assert.deepEqual(fingerprint(oldRoot), oldIndexes, 'original index directory is retained unchanged');
     assert.deepEqual((await read('/api/projects/aggregated')).projects.map(project => ({ projectId: project.projectId, knowledgePath: project.knowledgePath })), locations);
     for (const project of locations) assert.deepEqual(fingerprint(project.knowledgePath), knowledgeBefore[project.projectId], 'storage switch must not move or rewrite knowledge');
@@ -52,10 +67,12 @@ async function main() {
     }
     const searched = await fetch(environment.url + '/api/engine/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: 'project-real-a', scope: 'project', query: '提交知识更新与维护', limit: 10 }) });
     assert.ok(searched.ok); const result = await searched.json(); assert.equal(result.health.index, 'ok'); assert.ok(result.results.some(item => item.commitSha));
+    const memoryResponse = await fetch(environment.url + '/api/engine/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: 'project-real-a', spaceId: 'brain:brain-default', entryId: 'memories/confirmed.md' }) });
+    assert.ok(memoryResponse.ok); const memoryResult = await memoryResponse.json(); assert.ok(memoryResult.chunks.some(chunk => chunk.chunk_text.includes(confirmed[0].text)));
     await waitFor(() => browser.evaluate(`document.getElementById('indexStoragePath').textContent===${JSON.stringify(target)} && document.getElementById('indexStorageStatus').textContent.includes('已生效')`), 'UI actual path refresh');
     await browser.evaluate("document.getElementById('indexStoragePath').scrollIntoView({block:'center'})");
     await browser.screenshot(path.join(proof, 'actual-directory-1920.png')); assert.equal(browser.exceptions.length, 0);
-    Object.assign(report, { passed: true, actual, rebuild, oldIndexes, rebuiltChunks: chunks, newIndexes: fingerprint(target), citations: result.results.map(item => ({ entry: item.entry_id, commit: item.commitSha })), finishedAt: new Date().toISOString() }); save();
+    Object.assign(report, { passed: true, actual, rebuild, oldIndexes, sharedBefore, sharedFiles, confirmedMemories: confirmed.map(memory => memory.id), rebuiltChunks: chunks, newIndexes: fingerprint(target), citations: result.results.map(item => ({ entry: item.entry_id, commit: item.commitSha })), finishedAt: new Date().toISOString() }); save();
     console.log(`REAL_INDEX_STORAGE_UI_PASSED ${path.join(proof, 'result.json')}`);
   } catch (error) { report.failure = error.message; save(); throw error; }
   finally { await browser.close(); }
