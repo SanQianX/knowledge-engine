@@ -52,6 +52,7 @@ async function main() {
     const fill = (selector, value, id) => (id ? expression => frame(id, expression) : run)(`(() => { const field = document.querySelector(${JSON.stringify(selector)}); field.value = ${JSON.stringify(value)}; field.dispatchEvent(new Event('input', { bubbles: true })); })()`);
     const select = id => run(`(() => { const select = document.getElementById('projectSelect'); select.value = ${JSON.stringify(id)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
     await waitFor(() => run("document.getElementById('homeContent').textContent.includes('第一个项目')"), 'true empty state');
+    assert.equal(await run("getComputedStyle(document.getElementById('indexStoragePath')).display"), 'block', 'actual index path must be a readable block, not overlapping inline boxes');
     await click('[data-view="projects"]'); await click('#createDomain'); await fill('#domainForm input[name="name"]', '网页验收领域'); await click('#domainForm button[type="submit"]');
     await waitFor(() => run("!document.getElementById('domainDialog').open && document.getElementById('projectTree').textContent.includes('网页验收领域')"), 'domain UI feedback');
     await waitFor(() => run('window.__registryInFlight === 0'), 'previous registry read settles before fault injection');

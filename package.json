@@ -1,6 +1,6 @@
 {
   "name": "@sanqianx/ai-coding-knowledge-engine",
-  "version": "0.2.3-rc.3",
+  "version": "0.2.3-rc.4",
   "description": "Knowledge engine module for project-knowledge: commit-boundary triggered knowledge analysis/generation (trigger plane) and retrieval for development assistants (retrieval plane).",
   "license": "Apache-2.0",
   "main": "src/server.js",

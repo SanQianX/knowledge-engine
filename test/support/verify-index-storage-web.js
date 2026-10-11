@@ -53,6 +53,7 @@ async function main() {
     const searched = await fetch(environment.url + '/api/engine/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: 'project-real-a', scope: 'project', query: '提交知识更新与维护', limit: 10 }) });
     assert.ok(searched.ok); const result = await searched.json(); assert.equal(result.health.index, 'ok'); assert.ok(result.results.some(item => item.commitSha));
     await waitFor(() => browser.evaluate(`document.getElementById('indexStoragePath').textContent===${JSON.stringify(target)} && document.getElementById('indexStorageStatus').textContent.includes('已生效')`), 'UI actual path refresh');
+    await browser.evaluate("document.getElementById('indexStoragePath').scrollIntoView({block:'center'})");
     await browser.screenshot(path.join(proof, 'actual-directory-1920.png')); assert.equal(browser.exceptions.length, 0);
     Object.assign(report, { passed: true, actual, rebuild, oldIndexes, rebuiltChunks: chunks, newIndexes: fingerprint(target), citations: result.results.map(item => ({ entry: item.entry_id, commit: item.commitSha })), finishedAt: new Date().toISOString() }); save();
     console.log(`REAL_INDEX_STORAGE_UI_PASSED ${path.join(proof, 'result.json')}`);
