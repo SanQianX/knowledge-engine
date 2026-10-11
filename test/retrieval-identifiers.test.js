@@ -7,6 +7,41 @@ const path = require('node:path');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
 
+test('unassigned projects share no implicit domain; explicit domain and brain ranges remain inclusive', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'domain-retrieval-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const projects = [
+    { projectId: 'project-a', brainId: 'brain-one', domainId: null },
+    { projectId: 'project-b', brainId: 'brain-one', domainId: null },
+    { projectId: 'project-c', brainId: 'brain-one', domainId: 'domain-other' },
+    { projectId: 'project-d', brainId: 'brain-two', domainId: null },
+  ].map(project => {
+    const knowledgePath = path.join(root, project.projectId); fs.mkdirSync(knowledgePath);
+    fs.writeFileSync(path.join(knowledgePath, 'README.md'), `# Scope principle ${project.projectId}\n\nKnowledge writer boundary scope principle.\n`);
+    return { ...project, knowledgePath, enabled: true };
+  });
+  const sharedScopes = [
+    { id: 'brain-one', brainId: 'brain-one', kind: 'brain' },
+    { id: 'domain-tools', brainId: 'brain-one', domainId: 'domain-tools', kind: 'domain' },
+    { id: 'domain-other', brainId: 'brain-one', domainId: 'domain-other', kind: 'domain' },
+  ].map(scope => {
+    const knowledgePath = path.join(root, scope.id); fs.mkdirSync(knowledgePath);
+    fs.writeFileSync(path.join(knowledgePath, 'README.md'), `# Scope principle ${scope.id}\n\nKnowledge writer boundary scope principle.\n`);
+    return { ...scope, knowledgePath };
+  });
+  const store = { state: { sharedScopes }, getProject: id => projects.find(project => project.projectId === id), listProjects: () => projects, readRuntime: () => ({ index: {} }), listRuns: () => [] };
+  const retrieval = new EngineRetrieval({ layout: new RuntimeLayout(root), store, projectStore: { readState: () => ({ index: {} }) } });
+  retrieval.recallIndex = async (scopes, query, candidates, health) => { health.index = 'unavailable'; };
+  const ids = async scope => [...new Set((await retrieval.search({ projectId: 'project-a', query: 'scope principle', scope, limit: 30 })).results.map(result => result.scope_project_id))].sort();
+  assert.deepEqual(await ids('project'), ['project-a']);
+  assert.deepEqual(await ids('domain'), ['brain-one', 'project-a']);
+  assert.deepEqual(await ids('brain'), ['brain-one', 'domain-other', 'domain-tools', 'project-a', 'project-b', 'project-c']);
+  projects[0].domainId = projects[1].domainId = 'domain-tools';
+  assert.deepEqual(await ids('domain'), ['brain-one', 'domain-tools', 'project-a', 'project-b']);
+  projects[0].domainId = null;
+  assert.deepEqual(await ids('domain'), ['brain-one', 'project-a']);
+});
+
 test('known commit SHA and prefix cannot be crowded out by unrelated vector chunks or stale provenance', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'commit-retrieval-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

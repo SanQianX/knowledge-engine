@@ -40,7 +40,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     return [...super.scopes(project), ...this.sharedScopes(registration, 'domain')];
   }
   sharedScopes(registration, range) {
-    return this.store.state.sharedScopes.filter(s => s.brainId === registration.brainId && (s.kind === 'brain' || range === 'brain' || s.domainId === registration.domainId)).map(s => ({ projectId: s.id, spaceId: `${s.kind}:${s.id}`, knowledgePath: s.knowledgePath, weight: s.kind === 'brain' ? 0.6 : 0.75, reason: s.kind }));
+    return this.store.state.sharedScopes.filter(s => s.brainId === registration.brainId && (s.kind === 'brain' || range === 'brain' || registration.domainId && s.domainId === registration.domainId)).map(s => ({ projectId: s.id, spaceId: `${s.kind}:${s.id}`, knowledgePath: s.knowledgePath, weight: s.kind === 'brain' ? 0.6 : 0.75, reason: s.kind }));
   }
   scanCurrent(scopes) {
     const ordinary = scopes.filter(s => this.store.getProject(s.projectId));
@@ -92,7 +92,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     let scopes = [{ projectId: project.projectId, spaceId: project.primarySpaceId, knowledgePath: project.knowledgePath, weight: 1, reason: 'primary' }];
     if (input.scope === 'domain' || input.scope === 'brain') {
       scopes = this.store.listProjects().filter(p => p.enabled !== false && p.brainId === registration.brainId
-        && (input.scope === 'brain' || p.domainId === registration.domainId)).map(p => ({ projectId: p.projectId, spaceId: `project:${p.projectId}`, knowledgePath: p.knowledgePath, weight: p.projectId === registration.projectId ? 1 : 0.88, reason: p.projectId === registration.projectId ? 'primary' : input.scope }));
+        && (input.scope === 'brain' || p.projectId === registration.projectId || registration.domainId && p.domainId === registration.domainId)).map(p => ({ projectId: p.projectId, spaceId: `project:${p.projectId}`, knowledgePath: p.knowledgePath, weight: p.projectId === registration.projectId ? 1 : 0.88, reason: p.projectId === registration.projectId ? 'primary' : input.scope }));
       scopes.push(...this.sharedScopes(registration, input.scope));
     }
     const result = await super.search({ ...input, project, scopes });
