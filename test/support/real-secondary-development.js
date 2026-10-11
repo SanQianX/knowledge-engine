@@ -6,6 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const AtomicFile = require('../../src/runtime/atomic-file');
+const { citedEntry, verifySecondaryEvidence } = require('./secondary-evidence');
 
 async function main() {
   const environment = JSON.parse(fs.readFileSync(path.resolve(process.argv[2]), 'utf8'));
@@ -17,6 +18,10 @@ async function main() {
   const round = roundAt < 0 ? '' : process.argv[roundAt + 1];
   if (roundAt >= 0 && !/^[a-z][a-z0-9-]{0,40}$/.test(round || '')) throw new Error('INVALID_ACCEPTANCE_ROUND');
   const stem = `secondary-policy${round ? `-${round}` : ''}`;
+  const resumeAt = process.argv.indexOf('--resume-task');
+  const priorFile = resumeAt < 0 ? null : path.resolve(process.argv[resumeAt + 1]);
+  if (priorFile) { assert.equal(path.dirname(priorFile), environment.root); assert.match(path.basename(priorFile), /^real-secondary-development-\d+\.json$/); }
+  const priorTask = priorFile && JSON.parse(fs.readFileSync(priorFile));
   const proofFile = path.join(environment.root, `real-secondary-development-${Date.now()}.json`);
   const { redactValue } = require(path.join(environment.runtimeRoots.shell, '_site/lib/structured-logger'));
   const { ProfileStore } = require(path.join(environment.runtimeRoots.workbench, 'packages/server/lib/profile-store'));
@@ -30,18 +35,29 @@ async function main() {
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true, stdio: 'pipe' }).trim();
   let sessionId;
   try {
-    assert.equal(git(['status', '--porcelain']), '', 'secondary development requires a clean controlled repository');
+    if (!priorTask) assert.equal(git(['status', '--porcelain']), '', 'secondary development requires a clean controlled repository');
     const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
-    const prior = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.state === 'succeeded');
+    const prior = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.state === 'succeeded' && (!priorTask || r.commitSha === priorTask.sourceCommit));
     assert.ok(prior?.commitSha);
     proof.sourceCommit = prior.commitSha; proof.projectId = project.projectId;
     const files = [`${stem}.js`, `${stem}.test.js`];
-    assert.ok(files.every(file => !fs.existsSync(path.join(root, file))), 'do not overwrite an earlier acceptance result');
-    const created = await api('/api/terminal/sessions', { context: { contextId: project.modules.terminal.projectId, workspaceRef: project.modules.terminal.projectId }, agentId: 'claude-code', aiProfileId: 'acceptance-model', permissionMode: 'bypassPermissions' });
-    sessionId = created.session.sessionId; proof.sessionId = sessionId;
+    if (priorTask) {
+      assert.equal(priorTask.projectId, project.projectId); assert.equal(priorTask.installedCore, environment.runtimeRoots.shell); assert.ok(!priorTask.commitSha && priorTask.sessionId);
+      assert.ok(files.every(file => fs.existsSync(path.join(root, file))), 'resume validates existing files without overwriting them');
+      sessionId = priorTask.sessionId; proof.priorFailedAcceptance = priorFile;
+    } else {
+      assert.ok(files.every(file => !fs.existsSync(path.join(root, file))), 'do not overwrite an earlier acceptance result');
+      const created = await api('/api/terminal/sessions', { context: { contextId: project.modules.terminal.projectId, workspaceRef: project.modules.terminal.projectId }, agentId: 'claude-code', aiProfileId: 'acceptance-model', permissionMode: 'bypassPermissions' });
+      sessionId = created.session.sessionId;
+    }
+    proof.sessionId = sessionId;
     const cli = path.join(environment.runtimeRoots.shell, 'bin/project-knowledge-kb.js').replace(/\\/g, '/');
     proof.rawPrompt = `在当前受控测试仓库完成一次真实二次开发。先实际调用终端工具执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，读取生成的知识，不能仅凭此提示猜测知识。基于检索到的单写者约束，仅新增 ${files[0]} 和 ${files[1]}：CommonJS 导出 isKnowledgeWriter(owner)，只有 owner 为 engine-promotion 时返回 true，其他值返回 false；源文件注释引用实际知识 entry_id 和完整 commitSha。测试使用 Node 内置 assert，检查真/假两种情况，运行 node ${files[1]} 并输出 SECONDARY_POLICY_OK。不要修改其他文件、安装依赖、读取凭据或自行提交。最终回答引用实际检索依据和测试结果。`;
-    save(); await api(`/api/terminal/sessions/${sessionId}/input`, { text: proof.rawPrompt });
+    if (priorTask) {
+      const existing = await api(`/api/terminal/sessions/${sessionId}`);
+      proof.rawPrompt = existing.events.find(event => event.type === 'claude/user-prompt')?.text;
+      assert.ok(proof.rawPrompt?.includes(prior.commitSha) && files.every(file => proof.rawPrompt.includes(file)));
+    } else { save(); await api(`/api/terminal/sessions/${sessionId}/input`, { text: proof.rawPrompt }); }
     const taskDeadline = Date.now() + 240000;
     let snapshot;
     while (Date.now() < taskDeadline) {
@@ -49,9 +65,14 @@ async function main() {
       const error = snapshot.events.find(e => e.type === 'claude/error' || e.type === 'claude/result' && e.isError);
       assert.ok(!error, error?.message || error?.result);
       if (snapshot.session.state === 'idle' && snapshot.events.at(-1)?.type === 'claude/turn-end') break;
+      if (priorTask && snapshot.session.state === 'aborted') {
+        const states = snapshot.events.filter(event => event.type === 'claude/state');
+        assert.equal(states.at(-1)?.reason, 'no-active-subprocess'); assert.equal(states.at(-2)?.state, 'idle');
+        proof.sessionTeardown = 'original harness aborted an already completed turn'; break;
+      }
       await new Promise(resolve => setTimeout(resolve, 1500));
     }
-    assert.equal(snapshot.session.state, 'idle');
+    assert.ok(snapshot.session.state === 'idle' || priorTask && snapshot.session.state === 'aborted');
     const tools = snapshot.events.filter(e => ['claude/tool-use', 'claude/tool-result'].includes(e.type));
     const readAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes('project-knowledge-kb.js'));
     const evidenceAt = tools.findIndex(e => e.type === 'claude/tool-result' && JSON.stringify(e).includes('hybrid+markdown-truth') && JSON.stringify(e).includes(prior.commitSha));
@@ -61,10 +82,11 @@ async function main() {
     const policy = require(path.join(root, files[0]));
     assert.equal(policy.isKnowledgeWriter('engine-promotion'), true); assert.equal(policy.isKnowledgeWriter('shell'), false); assert.equal(policy.isKnowledgeWriter(null), false);
     const source = fs.readFileSync(path.join(root, files[0]), 'utf8');
-    assert.ok(source.includes(prior.commitSha) && /changes\/|modules\//.test(source));
+    const entry = await api('/api/engine/get', { projectId: project.projectId, entryId: citedEntry(source).entryId });
+    const knowledgeEvidence = verifySecondaryEvidence({ events: snapshot.events, source, projectId: project.projectId, latestCommit: prior.commitSha, file: files[0], entry });
     const tested = execFileSync(process.execPath, [files[1]], { cwd: root, windowsHide: true, encoding: 'utf8' });
     assert.ok(tested.includes('SECONDARY_POLICY_OK'));
-    proof.stages.push({ stage: 'Agent retrieval before edits and actual test', passed: true, sourceCommit: prior.commitSha, files: files.map(file => ({ path: file, sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex') })), toolEvidence: tools }); save();
+    proof.stages.push({ stage: 'Agent retrieval before edits and actual test', passed: true, sourceCommit: prior.commitSha, knowledgeEvidence, files: files.map(file => ({ path: file, sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex') })), toolEvidence: tools }); save();
     const captureDeadline = Date.now() + 10000;
     while ((await api('/api/terminal/health')).conversationCapture.pending && Date.now() < captureDeadline) await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal((await api('/api/terminal/health')).conversationCapture.pending, 0);
