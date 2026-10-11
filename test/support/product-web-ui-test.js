@@ -93,6 +93,7 @@ async function main() {
       const text = fs.readFileSync(path.join(project.knowledgePath, `changes/${commits[index].sha.slice(0, 12)}.md`), 'utf8');
       assert.ok(text.includes(commits[index].sha)); assert.match(text, /^# 提交 .* 变更记录/);
     }
+    await waitFor(() => run("document.getElementById('activityConnection').textContent === '已连接实时更新'"), 'completed activity screenshot has an accurate connected status');
     await browser.screenshot(path.join(proof, 'activity-1920-light.png'));
 
     await select(projects[0].projectId); await click('[data-view="work"]');
@@ -193,7 +194,9 @@ async function main() {
     assert.equal(await run("window.__webStreams.filter(s=>s.url.endsWith('/api/engine/progress') && s.readyState!==2).length"), 1, 'one shell progress subscription');
     await click('#themeToggle');
     await waitFor(async () => (await Promise.all(frameIds.map(id => frame(id, "document.body.dataset.kbTheme === 'dark'")))).every(Boolean), 'same embedded theme');
-    await click('[data-view="search"]'); await browser.screenshot(path.join(proof, 'search-1920-dark.png'));
+    await click('[data-view="search"]');
+    await waitFor(() => frame('vectorFrame', "!!document.querySelector('#results .res') && !document.querySelector('#results .skel') && !document.querySelector('#search-btn:disabled')"), 'dark search screenshot includes completed results');
+    await browser.screenshot(path.join(proof, 'search-1920-dark.png'));
     await click('#openSystem');
     await waitFor(() => run("document.getElementById('maintenanceModel').value==='acceptance-model'"), 'saved maintenance default loaded');
     await click('#saveMaintenance');
