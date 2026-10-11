@@ -26,6 +26,10 @@ async function main() {
   const report = { passed: false, identity, before: original, historyCause: '历史原因无法恢复：旧版本未保存原始索引错误。', startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(path.join(proof, 'result.json'), report);
   save();
+  await waitFor(async () => {
+    const configuration = (await read('/api/brain')).configuration;
+    return configuration?.scopes && configuration.model && configuration.embedding;
+  }, 'existing user supervised modules configured', 180000);
   const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(proof, 'browser'), url: url.href, width: 1920, height: 1080 });
   try {
     await browser.setViewport(1920, 1080);

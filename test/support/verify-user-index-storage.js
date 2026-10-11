@@ -36,6 +36,12 @@ async function main() {
   const read = async route => { const response = await fetch(new URL(route, url), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, route); return response.json(); };
   const identity = await read('/api/runtime/identity');
   assert.equal(identity.dataDir, dataDir); assert.match(identity.version, /^5\.0\.9(?:-rc\.\d+)?$/);
+  // The launcher becomes reachable before supervised modules acknowledge their
+  // configuration. Verify the acknowledged directory, not that transient phase.
+  await waitFor(async () => {
+    const configuration = (await read('/api/brain')).configuration;
+    return configuration?.indexStorage?.status === 'ready' && configuration?.scopeStatus?.status === 'ready' && configuration.embedding;
+  }, 'user module configuration acknowledgment', 180000);
   await waitFor(async () => !(await read('/api/vectorhub/rebuild/status')).running, 'user real index rebuild', 180000);
   const brain = await read('/api/brain');
   assert.equal(brain.configuration.indexStorage.actualPath, target);
