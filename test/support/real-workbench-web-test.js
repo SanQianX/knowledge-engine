@@ -18,14 +18,20 @@ async function main() {
   const sha = report.commits.find(commit => commit.projectId === 'project-real-a' && commit.state === 'succeeded').commitSha;
   const proof = path.join(environment.root, `real-workbench-web-${Date.now()}`);
   fs.mkdirSync(proof);
-  const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(environment.root, `real-workbench-browser-${Date.now()}`), url: environment.url, width: 1920, height: 1080 });
+  const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(environment.root, `real-workbench-browser-${Date.now()}`), url: 'about:blank', width: 1920, height: 1080 });
   try {
+    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `window.__workbenchReady = false;
+      window.addEventListener('message', event => {
+        if (event.origin === location.origin && event.source === document.getElementById('workFrame')?.contentWindow && event.data?.type === 'kb:ready' && event.data.app === 'agent-terminal') window.__workbenchReady = true;
+      });` });
+    await browser.send('Page.navigate', { url: environment.url });
     await browser.setViewport(1920, 1080);
     const run = expression => browser.evaluate(expression);
     const frame = expression => run(`document.getElementById('workFrame').contentWindow.eval(${JSON.stringify(expression)})`);
     await waitFor(() => run("document.getElementById('projectSelect').options.length===2"), 'registered npm projects');
     await run("(()=>{const field=document.getElementById('projectSelect');field.value='project-real-a';field.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-view=work]').click()})()");
-    await waitFor(() => frame("!!document.getElementById('chat-input') && !document.getElementById('btn-model').disabled"), 'real Workbench ready');
+    await waitFor(() => run('window.__workbenchReady'), 'usable Workbench ready receipt', 30000);
+    await waitFor(() => frame("!!state.activeProjectId && !!document.getElementById('chat-input') && !document.getElementById('view-terminal').inert && !document.getElementById('btn-model').disabled"), 'real Workbench ready');
     await frame("document.getElementById('open-settings').click();document.querySelector('[data-s=agents]').click()");
     await waitFor(() => frame("!!document.querySelector('#agent-cards .agent-badge.claude-code')"), 'actual installed Claude Code discovery');
     await frame("document.querySelector('#agent-cards .agent-badge.claude-code').closest('.agent-card').click();document.getElementById('settings-back').click()");
