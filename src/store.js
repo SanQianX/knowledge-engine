@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { validateProjectId } = require('./runtime/contracts');
 const { RuntimeLayout } = require('./runtime/layout');
+const AtomicFile = require('./runtime/atomic-file');
 
 /**
  * 单文件 JSON 状态层（<data>/engine-state.json）：注册项目、分析运行、事件流。
@@ -56,12 +57,9 @@ class EngineStore {
   }
 
   save() {
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    const tmp = this.file + '.tmp';
-    const fd = fs.openSync(tmp, 'w', 0o600);
-    try { fs.writeFileSync(fd, JSON.stringify(this.state, null, 2), 'utf8'); fs.fsyncSync(fd); }
-    finally { fs.closeSync(fd); }
-    fs.renameSync(tmp, this.file);
+    // Windows scanners/readers may briefly hold the destination; never unlink
+    // durable state to force a replace, or share a fixed temp name with writers.
+    AtomicFile.writeJsonAtomic(this.file, this.state);
   }
 
   listProjects() {
