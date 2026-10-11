@@ -117,6 +117,7 @@ async function main() {
   const stop = async () => {
     if (stopped) return; stopped = true;
     await shell.stop('acceptance-stop'); await engine.close();
+    await workbench.service.destroy();
     for (const server of [workbench.server, vectors, events]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     await manager.close?.(); process.exit(0);
   };
