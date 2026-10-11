@@ -312,7 +312,11 @@ class KnowledgePromotionService {
     if (!claim || claim.projectId !== projectId || !claim.runId || !claim.commitSha) throw new DomainError('INVALID_ARGUMENT', 'Active claim is required for knowledge promotion.');
     const operationId = input.operationId || claim.operationId || createId('op');
     const stagingPath = this.prepareStaging(projectId, claim.runId);
-    const beforeSource = await gitStatus(config.repoPath);
+    // The isolated worker cannot read or write the live repository. A user may
+    // keep developing while it consumes frozen evidence; live status is neither
+    // its input nor proof of worker writes. Keep the guard for other analyzers.
+    const verifyLiveSource = this.analyzer?.sourceReadMode !== 'isolated-frozen-evidence';
+    const beforeSource = verifyLiveSource ? await gitStatus(config.repoPath) : null;
     try {
       if (!this.analyzer || typeof this.analyzer.runClaim !== 'function') throw new DomainError('INVALID_ARGUMENT', 'Knowledge analyzer is unavailable.', { status: 503, retryable: true });
       const analyzerResult = await this.analyzer.runClaim({
@@ -329,7 +333,7 @@ class KnowledgePromotionService {
         }),
       });
       if (analyzerResult && analyzerResult.ok === false) throw new DomainError('INVALID_ARGUMENT', analyzerResult.error || 'Knowledge analyzer failed.', { status: 500, retryable: true });
-      const afterSource = await gitStatus(config.repoPath);
+      const afterSource = verifyLiveSource ? await gitStatus(config.repoPath) : null;
       if (beforeSource != null && afterSource != null && beforeSource !== afterSource) {
         throw new DomainError('PROJECT_BUSY', 'Source repository changed during knowledge analysis.', { status: 409, retryable: true });
       }

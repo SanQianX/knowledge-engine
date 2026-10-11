@@ -50,7 +50,7 @@ class EngineCoordinator extends EventEmitter {
     this.retrieval = new EngineRetrieval({ layout: this.layout, projectStore: this.projectStore, registryStore, store, memories: this.memories, vectorUrl: this.vectorUrl });
     this.conversations = new ConversationStore({ layout: this.layout, projectStore: this.projectStore });
     this.analyzer = options.analyzer || new HeadlessAnalyzer({ resolveProfile: id => this.profiles.get(id) || this.profiles.get('default'), timeoutMs: options.timeoutMs });
-    this.promotion = new KnowledgePromotionService({ layout: this.layout, logger: this.diagnostics, projectStore: this.projectStore, analyzer: { runClaim: async input => {
+    this.promotion = new KnowledgePromotionService({ layout: this.layout, logger: this.diagnostics, projectStore: this.projectStore, analyzer: { sourceReadMode: this.analyzer.sourceReadMode, runClaim: async input => {
       const run = this.currentRun(input.projectId);
       store.updateRun(run.runId, { analysisRunId: input.claim.runId, phase: 'analyzing' });
       this.notify(run, '正在分析冻结的提交证据');

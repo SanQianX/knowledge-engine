@@ -6,6 +6,7 @@ const { finalizeAnalysisOutput } = require('./analysis-output');
 const { freezeKnowledgeTargets } = require('./knowledge-targets');
 
 class HeadlessAnalyzer {
+  get sourceReadMode() { return 'isolated-frozen-evidence'; }
   constructor({ resolveProfile, timeoutMs = 15 * 60 * 1000, workerPath = path.join(__dirname, 'analysis-worker.js') } = {}) { this.resolveProfile = resolveProfile; this.timeoutMs = timeoutMs; this.workerPath = workerPath; this.children = new Map(); this.closed = false; }
   async runClaim(input) {
     if (this.closed) throw Object.assign(new Error('分析服务正在关闭。'), { code: 'WORKER_STOPPED', retryable: true });
