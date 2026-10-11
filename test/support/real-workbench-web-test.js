@@ -49,7 +49,8 @@ async function main() {
       return snapshot.events.at(-1)?.type === 'claude/turn-end';
     }, 'backend completion and persisted final turn', 300000);
     assert.equal(browser.exceptions.length, 0, JSON.stringify(browser.exceptions));
-    const verified = spawnSync(process.execPath, [path.join(__dirname, 'verify-real-workbench.js'), environmentFile, '--expected-model', selectedModel, '--session-id', sentSessionId], { encoding: 'utf8', windowsHide: true });
+    fs.writeFileSync(path.join(proof, 'ui-backend-receipt.json'), JSON.stringify({ sessionId: sentSessionId, expectedModel: selectedModel, expectedCommit: sha, uiSend: true, streamedAnswerAndReferences: true, finalTurnPersisted: true }, null, 2));
+    const verified = spawnSync(process.execPath, [path.join(__dirname, 'verify-real-workbench.js'), environmentFile, '--expected-model', selectedModel, '--expected-commit', sha, '--session-id', sentSessionId], { encoding: 'utf8', windowsHide: true });
     assert.equal(verified.status, 0, verified.stderr);
     await browser.screenshot(path.join(proof, 'workbench-real-1920.png'));
     fs.copyFileSync(path.join(environment.root, 'real-workbench-acceptance.json'), path.join(proof, 'real-workbench-acceptance.json'));

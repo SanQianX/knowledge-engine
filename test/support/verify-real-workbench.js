@@ -27,7 +27,8 @@ async function main() {
   assert.equal(snapshot.session.state, 'idle', 'the real task must finish while its reusable session stays available');
   assert.ok(context.references.length && context.references.every(ref => ref.projectId !== 'project-real-b'));
   const commits = JSON.parse(fs.readFileSync(path.join(environment.root, 'real-agent-acceptance.json'))).commits;
-  const sha = commits.find(commit => commit.projectId === project.projectId && commit.state === 'succeeded')?.commitSha;
+  const commitFlag = process.argv.indexOf('--expected-commit');
+  const sha = commitFlag < 0 ? commits.find(commit => commit.projectId === project.projectId && commit.state === 'succeeded')?.commitSha : process.argv[commitFlag + 1];
   assert.match(sha || '', /^[a-f0-9]{40}$/);
   const deltas = snapshot.events.filter(e => e.type === 'claude/text-delta');
   const answers = snapshot.events.filter(e => ['claude/assistant', 'claude/message', 'claude/result'].includes(e.type));
