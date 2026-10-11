@@ -34,14 +34,20 @@ async function main() {
   const report = { passed: false, identity, projectId: project.projectId, commitSha: run.commitSha, cliReferences: query.results.map(r => ({ entry: r.entry_id, commit: r.commitSha })), startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(path.join(proof, 'result.json'), report);
   save();
-  const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(proof, 'browser'), url: address.href, width: 1920, height: 1080 });
+  const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(proof, 'browser'), url: 'about:blank', width: 1920, height: 1080 });
   try {
+    await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `window.__workbenchReady = false;
+      window.addEventListener('message', event => {
+        if (event.origin === location.origin && event.source === document.getElementById('workFrame')?.contentWindow && event.data?.type === 'kb:ready' && event.data.app === 'agent-terminal') window.__workbenchReady = true;
+      });` });
+    await browser.send('Page.navigate', { url: address.href });
     await browser.setViewport(1920, 1080);
     const page = expression => browser.evaluate(expression);
     const frame = expression => page(`document.getElementById('workFrame').contentWindow.eval(${JSON.stringify(expression)})`);
     await waitFor(() => page(`!![...document.getElementById('projectSelect').options].find(o=>o.value===${JSON.stringify(project.projectId)})`), 'existing registered project');
     await page(`(()=>{const s=document.getElementById('projectSelect');s.value=${JSON.stringify(project.projectId)};s.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-view=work]').click()})()`);
-    await waitFor(() => frame("!!document.getElementById('chat-input') && !document.getElementById('btn-model').disabled"), 'existing Workbench ready', 60000);
+    await waitFor(() => page('window.__workbenchReady'), 'existing usable Workbench ready receipt', 60000);
+    await waitFor(() => frame("!!state.activeProjectId && !!document.getElementById('chat-input') && !document.getElementById('view-terminal').inert && !document.getElementById('btn-model').disabled"), 'existing Workbench ready', 60000);
     await frame("document.getElementById('open-settings').click();document.querySelector('[data-s=agents]').click()");
     await waitFor(() => frame("!!document.querySelector('#agent-cards .agent-badge.claude-code')"), 'actual Claude Code discovery');
     await frame("document.querySelector('#agent-cards .agent-badge.claude-code').closest('.agent-card').click();document.getElementById('settings-back').click()");
