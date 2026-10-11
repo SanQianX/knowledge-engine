@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { KnowledgeRetrievalService } = require('./runtime/knowledge-retrieval-service');
-const { listMarkdownFiles } = require('./runtime/markdown-knowledge-indexer');
+const { listMarkdownFiles, isExcludedKnowledgePath } = require('./runtime/markdown-knowledge-indexer');
 const { DomainError } = require('./runtime/contracts');
 
 class EngineRetrieval extends KnowledgeRetrievalService {
@@ -116,6 +116,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     if (input.spaceId && !scope && input.spaceId !== `project:${registration.projectId}`) throw new DomainError('PROJECT_NOT_FOUND', '知识范围与项目归属不匹配。', { status: 404 });
     const project = scope ? { projectId: scope.id, knowledgePath: scope.knowledgePath } : registration;
     const entryId = String(input.entryId || input.entry || '').replace(/\\/g, '/');
+    if (isExcludedKnowledgePath(entryId)) throw new DomainError('PATH_OUTSIDE_ROOT', '会话证据与内部数据不能作为正式知识读取。', { status: 403 });
     const target = path.resolve(project.knowledgePath, entryId);
     if (!entryId || !/\.md$/i.test(target) || !this.layout.isPathInside(project.knowledgePath, target, { realpath: true })) throw new DomainError('PATH_OUTSIDE_ROOT', '知识文件越界。', { status: 403 });
     if (!fs.existsSync(target) || !fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new DomainError('PROJECT_NOT_FOUND', '知识文件不存在。', { status: 404 });

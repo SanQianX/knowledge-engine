@@ -1,5 +1,7 @@
 # knowledge-engine
 
+正式知识检索（包括 `get`）排除 `dev-conversations`、内部会话、备份与隐藏目录。提交会话只作为分析证据，不直接充当已晋升知识；原始证据仍由事件模块保留。
+
 > 开发前读 [AGENTS.md](AGENTS.md)。该指南中的脚手架状态是历史背景；当前运行契约及实现状态以本 README 为准。
 
 `project-knowledge` 模块家族的第四块：**知识引擎**。owns 两个职责面，shell 只负责连接与投影（"The shell owns no features"）：
