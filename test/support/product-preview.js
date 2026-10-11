@@ -66,7 +66,12 @@ async function main() {
   const faultScenarios = !realProfile && process.env.KB_ACCEPTANCE_FAULT_SCENARIOS === '1';
   const observations = { attempts: {}, syncFailures: 0 };
   const recordFaults = () => AtomicFile.writeJsonAtomic(path.join(root, 'fault-observations.json'), observations);
-  const manager = await HubManager.load({ managed: true, rootPath: path.join(root, 'indexes'), configPath: path.join(root, 'vector.json'), ...(realEmbeddingSettings ? {} : { embeddingsFactory: () => ({ maxTokens: 1000, async createEmbeddings(inputs) { return { status: 'success', output: (Array.isArray(inputs) ? inputs : [inputs]).map(() => [1, 0]) }; } }) }) });
+  const settingsFile = path.join(process.env.KB_DATA_DIR, 'settings.json');
+  const initialSettings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : { knowledge: { rootPath: path.join(root, 'knowledge') } };
+  // Mirror the supervisor's persisted directory choice. A hardcoded old root
+  // would manufacture a storage switch and paid rebuild on every fixture restart.
+  const initialIndexRoot = new StorageLayout({ dataDir: process.env.KB_DATA_DIR }).getVectorRootPath(initialSettings);
+  const manager = await HubManager.load({ managed: true, rootPath: initialIndexRoot, configPath: path.join(root, 'vector.json'), ...(realEmbeddingSettings ? {} : { embeddingsFactory: () => ({ maxTokens: 1000, async createEmbeddings(inputs) { return { status: 'success', output: (Array.isArray(inputs) ? inputs : [inputs]).map(() => [1, 0]) }; } }) }) });
   const vectorHandler = createServer(manager, { runtimeToken: token, uiPath: path.join(vectorPackage, 'ui/index.html') });
   const vectors = http.createServer((req, res) => {
     if (faultScenarios && req.method === 'POST' && req.url === '/api/sync' && observations.syncFailures === 0) {
