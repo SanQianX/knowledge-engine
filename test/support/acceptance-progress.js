@@ -20,7 +20,7 @@ async function main() {
   assert.equal(installation.schema, 'project-knowledge/installed-registry/v1');
   assert.equal(installation.version, '5.0.9-rc.19');
   assert.equal(installation.integrityPassed, true);
-  const source = ['shell-rc19-full24', 'shell-rc19-full22', 'engine-final-rc19-full24', 'engine-final-rc19-full22', 'workbench-startup-final24', 'workbench-startup-final22', 'vector-final24', 'vector-final22', 'bridge-final-isolated24', 'bridge-final-isolated22'].map(label => latestSuite(directory, label));
+  const source = ['shell-rc19-full24', 'shell-rc19-full22', 'engine-frozen-final24', 'engine-frozen-final22', 'workbench-startup-final24', 'workbench-startup-final22', 'vector-final24', 'vector-final22', 'bridge-final-isolated24', 'bridge-final-isolated22'].map(label => latestSuite(directory, label));
   const candidateLabels = ['registry-ready24', 'web24', 'web22', 'fault24', 'fault22', 'lifecycle24', 'lifecycle22', 'startup-gate24', 'startup-gate22', 'index-upgrade24', 'real-commits24', 'workbench24', 'live-development24', 'secondary24', 'four-clients24', 'embedding24', 'surfaces24', 'surfaces22'];
   const candidate = candidateLabels.map(label => latestSuite(directory, 'npm-rc19-' + label));
   const user = ['frozen-upgrade24', 'index-root24', 'real-workbench24', 'repair-hook24', 'restart24'].map(label => latestSuite(directory, 'user-rc19-' + label));
