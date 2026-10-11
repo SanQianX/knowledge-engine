@@ -37,13 +37,23 @@ async function main() {
   } else {
     const report = JSON.parse(fs.readFileSync(reportFile));
     assert.notEqual(current.pid, report.before.pid);
-    assert.equal(current.installationReport, report.before.installationReport);
+    if (process.argv.includes('--upgrade')) {
+      const previous = JSON.parse(fs.readFileSync(report.before.installationReport));
+      const next = JSON.parse(fs.readFileSync(current.installationReport));
+      assert.ok(previous.integrityPassed && next.integrityPassed && next.schema === 'project-knowledge/installed-registry/v1');
+      assert.notEqual(next.version, previous.version, 'an upgrade receipt requires distinct official package versions');
+      assert.equal(next.engineVersion, previous.engineVersion, 'this no-rebuild upgrade check requires the same source-policy runtime');
+      for (const key of Object.keys(previous.modules)) assert.equal(next.modules[key].version, previous.modules[key].version);
+      report.upgrade = { before: previous.version, after: next.version, verifiedRegistryBytes: true };
+    } else assert.equal(current.installationReport, report.before.installationReport);
     assert.equal(current.root, report.before.root);
     assert.equal(current.indexRoot, report.before.indexRoot);
     assert.deepEqual(current.files, report.before.files, 'restart must not rewrite or regenerate real vectors');
     assert.equal(rebuild.total, 0, 'ordinary restart must not initiate a whole-index paid rebuild');
     Object.assign(report, { after: current, passed: true, rebuild });
-    AtomicFile.writeJsonAtomic(reportFile, report);
+    const outputFile = process.argv.includes('--upgrade') ? path.join(path.dirname(reportFile), `${path.basename(reportFile, '.json')}-upgrade-${Date.now()}.json`) : reportFile;
+    AtomicFile.writeJsonAtomic(outputFile, report);
+    if (outputFile !== reportFile) console.log(`REAL_INDEX_UPGRADE_EVIDENCE ${outputFile}`);
   }
   console.log(`REAL_INDEX_RESTART_${mode.toUpperCase()} ${reportFile}`);
 }
