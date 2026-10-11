@@ -1,7 +1,15 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { verifySecondaryEvidence } = require('./support/secondary-evidence');
+const { citedEntry, verifySecondaryEvidence } = require('./support/secondary-evidence');
+
+test('real model citations accept commit and commitSha labels without requiring fixed wording', () => {
+  const sha = 'd'.repeat(40), entryId = 'changes/dddddddddddd.md';
+  for (const citation of [`commit ${sha}`, `commitSha: ${sha}`, `Commit: \`${sha}\``]) {
+    assert.deepEqual(citedEntry(`// ${entryId} (${citation})`), { entryId, commitSha: sha });
+  }
+  assert.throws(() => citedEntry(`// ${entryId} commit dddddddd`), /full commit/);
+});
 
 test('secondary acceptance validates actual knowledge origins, not an unrelated latest commit', () => {
   const latest = 'a'.repeat(40), origin = 'b'.repeat(40), entryId = 'changes/bbbbbbbbbbbb.md';

@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 function citedEntry(source) {
   const entryId = source.match(/\b(?:changes|modules)\/[a-zA-Z0-9._/-]+\.md\b/)?.[0];
-  const commitSha = source.match(/\bcommitSha\s*[:=]?\s*([a-f0-9]{40})\b/)?.[1];
+  const commitSha = source.match(/\bcommit(?:Sha)?\s*[:=]?\s*`?([a-f0-9]{40})\b/i)?.[1];
   assert.ok(entryId && commitSha, 'source must cite a knowledge entry and its full commit');
   assert.ok(!entryId.includes('..'), 'citation cannot escape the knowledge tree');
   return { entryId, commitSha };

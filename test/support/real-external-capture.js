@@ -25,6 +25,7 @@ async function main() {
   assert.ok(doctor.agents['claude-code'].versionProbe.ok && path.isAbsolute(cli));
   const sessionId = crypto.randomUUID();
   const directory = path.join(environment.root, `external-cli-${sessionId}`);
+  fs.mkdirSync(directory, { recursive: true });
   const settingsFile = path.join(directory, 'settings.json');
   const manager = new IntegrationManager({ rootDir: core, homeDir: directory, env: {}, bridgeHomeDir: path.join(environment.root, 'events'), claudeSettingsFile: settingsFile });
   const installed = await manager.installCaptureClaude(); assert.ok(installed.installed && !installed.conflict);
@@ -53,8 +54,8 @@ async function main() {
     assert.ok(journal?.store);
     const journalFile = path.join(journal.store, 'journal/events.jsonl');
     const captured = fs.readFileSync(journalFile, 'utf8').split(/\r?\n/).filter(Boolean).map(JSON.parse).filter(item => item.sessionId === sessionId);
-    assert.ok(captured.some(item => item.type === 'user' && item.content === prompt), 'native UserPromptSubmit must preserve exact original prompt');
-    assert.ok(captured.some(item => item.type === 'assistant' && item.content.includes('EXTERNAL_CAPTURE_OK')), 'native Stop must capture actual final answer');
+    assert.ok(captured.some(item => item.eventType === 'user_prompt' && item.role === 'user' && item.content === prompt), 'native UserPromptSubmit must preserve exact original prompt');
+    assert.ok(captured.some(item => item.eventType === 'assistant_response' && item.role === 'assistant' && item.content.includes('EXTERNAL_CAPTURE_OK')), 'native Stop must capture actual final answer');
     assert.ok(captured.every(item => item.source === 'claude-code'));
     Object.assign(report, { passed: true, journalFile, captured, finishedAt: new Date().toISOString() }); save();
     console.log(`REAL_EXTERNAL_CAPTURE_PASSED ${output}`);
