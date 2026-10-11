@@ -23,6 +23,9 @@ async function main() {
     const index = JSON.parse(fs.readFileSync(path.join(indexRoot, id, 'index.json'), 'utf8'));
     assert.ok(index.items.length, 'real promoted knowledge must have indexed chunks');
     assert.ok(index.items.every(item => item.vector.length === 1536 && item.vector.every(Number.isFinite)), 'real embo-01 vectors must replace the controlled 2D index');
+    const catalog = JSON.parse(fs.readFileSync(path.join(indexRoot, id, 'catalog.json')));
+    const evidenceUris = Object.keys(catalog.uriToId).filter(uri => uri.split(/[\\/]/).some(segment => ['dev-conversations', '_ai', '_backup', 'node_modules'].includes(segment.toLowerCase())));
+    assert.deepEqual(evidenceUris, [], 'raw conversation evidence must not enter the paid knowledge vector index');
     dimensions[id] = { chunks: index.items.length, dimension: 1536 };
   }
   const query = new URLSearchParams({ q: '知识文件单写者维护与提交依据', projects: 'project-real-a,project-real-b', isBm25: 'false' });

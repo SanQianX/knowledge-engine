@@ -19,6 +19,7 @@ async function main() {
   assert.ok(path.basename(environment.root).startsWith('智脑桌面验收-') && environment.model.startsWith('real Agent and real embeddings'));
   const read = async route => { const response = await fetch(new URL(route, environment.url)); assert.ok(response.ok, route); return response.json(); };
   const oldRoot = (await read('/api/vectorhub/settings')).settings.rootPath;
+  await waitFor(async () => !(await read('/api/vectorhub/rebuild/status')).running, 'startup source-policy index rebuild', 180000);
   let oldIndexes;
   const projects = (await read('/api/projects/aggregated')).projects;
   const locations = projects.map(project => ({ projectId: project.projectId, knowledgePath: project.knowledgePath }));
@@ -71,6 +72,8 @@ async function main() {
       const index = JSON.parse(fs.readFileSync(path.join(target, projectId, 'index.json')));
       assert.ok(index.items.length && index.items.every(item => item.vector.length === 1536));
       chunks[projectId] = index.items.length;
+      const catalog = JSON.parse(fs.readFileSync(path.join(target, projectId, 'catalog.json')));
+      assert.ok(Object.keys(catalog.uriToId).every(uri => !uri.split(/[\\/]/).some(segment => ['dev-conversations', '_ai', '_backup', 'node_modules'].includes(segment.toLowerCase()))));
     }
     const searched = await fetch(environment.url + '/api/engine/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: 'project-real-a', scope: 'project', query: '提交知识更新与维护', limit: 10 }) });
     assert.ok(searched.ok); const result = await searched.json(); assert.equal(result.health.index, 'ok'); assert.ok(result.results.some(item => item.commitSha));
