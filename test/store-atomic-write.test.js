@@ -8,7 +8,11 @@ const { EngineStore } = require('../src/store');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-store-atomic-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
+    assert.match(path.basename(directory), /^engine-store-atomic-/);
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
   const store = new EngineStore(directory);
   store.save();
   return store;
