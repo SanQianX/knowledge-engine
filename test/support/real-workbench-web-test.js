@@ -11,7 +11,10 @@ async function main() {
   const environment = JSON.parse(fs.readFileSync(environmentFile));
   assert.equal(environment.installationSource, 'project-knowledge/installed-registry/v1');
   assert.ok(environment.model.startsWith('real Agent'));
-  const report = JSON.parse(fs.readFileSync(path.join(environment.root, 'real-agent-acceptance.json')));
+  const roundAt = process.argv.indexOf('--round');
+  const round = roundAt < 0 ? '' : process.argv[roundAt + 1];
+  assert.ok(!round || /^[a-z][a-z0-9-]{0,40}$/.test(round));
+  const report = JSON.parse(fs.readFileSync(path.join(environment.root, round ? `real-agent-${round}-acceptance.json` : 'real-agent-acceptance.json')));
   const sha = report.commits.find(commit => commit.projectId === 'project-real-a' && commit.state === 'succeeded').commitSha;
   const proof = path.join(environment.root, `real-workbench-web-${Date.now()}`);
   fs.mkdirSync(proof);
