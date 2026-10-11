@@ -23,7 +23,9 @@ async function main() {
     await waitFor(() => run("document.getElementById('projectSelect').options.length===2"), 'registered npm projects');
     await run("(()=>{const field=document.getElementById('projectSelect');field.value='project-real-a';field.dispatchEvent(new Event('change',{bubbles:true}));document.querySelector('[data-view=work]').click()})()");
     await waitFor(() => frame("!!document.getElementById('chat-input') && !document.getElementById('btn-model').disabled"), 'real Workbench ready');
-    await frame("document.querySelector('#agent-cards .agent-badge.claude-code').closest('.agent-card').click()");
+    await frame("document.getElementById('open-settings').click();document.querySelector('[data-s=agents]').click()");
+    await waitFor(() => frame("!!document.querySelector('#agent-cards .agent-badge.claude-code')"), 'actual installed Claude Code discovery');
+    await frame("document.querySelector('#agent-cards .agent-badge.claude-code').closest('.agent-card').click();document.getElementById('settings-back').click()");
     assert.equal(await frame('state.currentAgent'), 'claude-code');
     const previousSessionId = await frame('state.activeSessionId');
     await frame("document.getElementById('btn-new-session').click()");
