@@ -15,6 +15,9 @@ async function main() {
   const runtimeModule = require(path.join(core, '_site/lib/knowledge-tool-runtime'));
   const runtime = new runtimeModule.KnowledgeToolRuntime({ dataDir: path.join(environment.root, 'shell') });
   const project = runtime.resolveProject({ repoPath: environment.repositories[0] });
+  const brain = await (await fetch(new URL('/api/brain', environment.url))).json();
+  const activeIndexPath = brain.configuration?.indexStorage?.actualPath;
+  assert.ok(activeIndexPath && brain.configuration.indexStorage.status === 'ready');
   const api = async (action, input) => {
     const response = await fetch(new URL(`/api/engine/${action}`, environment.url), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: project.projectId, ...input }) });
     assert.equal(response.status, 200); return response.json();
@@ -41,6 +44,9 @@ async function main() {
       const result = await client.callTool({ name: `project_knowledge_${action}`, arguments: { projectId: project.projectId, ...input } });
       assert.ok(!result.isError, result.content[0]?.text); return JSON.parse(result.content[0].text);
     };
+    const resolutions = [project, await cli(['resolve']), await mcp('resolve', {})];
+    assert.ok(resolutions.every(result => result.indexPath === activeIndexPath), 'UI, runtime, CLI and MCP must agree on the active vector directory');
+    proof.resolution = { activeIndexPath, surfaces: ['runtime', 'CLI', 'MCP'], passed: true };
     for (const scope of ['project', 'domain', 'brain']) {
       const input = { query: run.commitSha, scope, limit: 8 };
       const web = await api('search', input);
