@@ -37,7 +37,13 @@ async function main() {
       window.EventSource = class extends NativeSource { constructor(...args) { super(...args); window.__webStreams.push(this); } };
       const nativeFetch = window.fetch.bind(window);
       window.__heldRequests = [];
-      window.fetch = async (...args) => { const response = await nativeFetch(...args); if (window.__holdRoute && String(args[0]).includes(window.__holdRoute)) { window.__holdRoute = ''; await new Promise(resolve => window.__heldRequests.push(resolve)); } return response; };
+      window.__registryInFlight = 0;
+      window.fetch = async (...args) => {
+        const registry = String(args[0]).includes('/api/projects/aggregated');
+        if (registry) window.__registryInFlight++;
+        try { const response = await nativeFetch(...args); if (window.__holdRoute && String(args[0]).includes(window.__holdRoute)) { window.__holdRoute = ''; await new Promise(resolve => window.__heldRequests.push(resolve)); } return response; }
+        finally { if (registry) window.__registryInFlight--; }
+      };
     })();` });
     await browser.send('Page.navigate', { url: environment.url });
     const run = expression => browser.evaluate(expression);
@@ -48,6 +54,7 @@ async function main() {
     await waitFor(() => run("document.getElementById('homeContent').textContent.includes('第一个项目')"), 'true empty state');
     await click('[data-view="projects"]'); await click('#createDomain'); await fill('#domainForm input[name="name"]', '网页验收领域'); await click('#domainForm button[type="submit"]');
     await waitFor(() => run("!document.getElementById('domainDialog').open && document.getElementById('projectTree').textContent.includes('网页验收领域')"), 'domain UI feedback');
+    await waitFor(() => run('window.__registryInFlight === 0'), 'previous registry read settles before fault injection');
     await run("window.__holdRoute='/api/projects/aggregated';window.dispatchEvent(new Event('online'))");
     await waitFor(() => run('window.__heldRequests.length>0'), 'hold pre-domain registry response');
     await click('#createDomain'); await fill('#domainForm input[name="name"]', '并发刷新验收领域'); await click('#domainForm button[type="submit"]');
@@ -241,6 +248,7 @@ async function main() {
     await waitFor(() => run("document.getElementById('unbindDialog').open"), 'real unbind confirmation dialog');
     await click('[data-close="unbindDialog"]');
     assert.equal((await api('/api/projects/aggregated')).projects.length, 2, 'cancel must not remove a project');
+    await waitFor(() => run('window.__registryInFlight === 0'), 'previous project selection read settles before fault injection');
     await run("window.__holdRoute='/api/projects/aggregated'; window.dispatchEvent(new Event('online'));");
     await waitFor(() => run('window.__heldRequests.length > 0'), 'hold a pre-unbind registry response');
     await click('[data-action="unbind"]'); await click('#confirmUnbind');
