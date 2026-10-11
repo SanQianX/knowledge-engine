@@ -8,7 +8,7 @@ const shellRoot = path.resolve(__dirname, '../../../project-knowledge-base');
 const { findChrome } = require(path.join(shellRoot, '_site/_test/helpers/find-chrome'));
 const { launchCdpBrowser, waitFor } = require(path.join(shellRoot, '_site/_test/helpers/cdp-browser'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
-const proof = path.resolve(__dirname, `../../.agent-state/acceptance/${process.env.KB_PRODUCT_INSTALLATION_REPORT ? 'npm-web-faults' : 'web-faults'}`);
+const proof = path.resolve(__dirname, `../../.agent-state/acceptance/${process.env.KB_PRODUCT_INSTALLATION_REPORT ? 'npm-web-faults' : 'web-faults'}`, `run-${Date.now()}-node${process.versions.node.split('.')[0]}`);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const git = (repo, args) => execFileSync('git', args, { cwd: repo, windowsHide: true, encoding: 'utf8' }).trim();
 
@@ -137,7 +137,7 @@ async function main() {
     for (const marker of ['controlled-agent-not-real', 'controlled-embedding-not-real']) assert.ok(!serialized.includes(marker), 'credentials must not appear in projected state, engine store or UI');
     assert.equal(browser.exceptions.length, 0, JSON.stringify(browser.exceptions));
     fs.mkdirSync(proof, { recursive: true }); fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), installationSource: environment.installationSource, runtimeRoots: environment.runtimeRoots, viewport: '1920x1080', model: 'controlled failure injection', embedding: 'controlled substitute', timeoutSha, indexSha, queuedSha, invalidSha, offlineSha, assertions: ['UI model failure and same-claim retry', 'FIFO block and recovery', 'independent project progression', 'UI index-only repair retains promoted bytes', 'illegal output cannot touch canonical knowledge', 'live failure-to-success page refresh', 'browser offline maintenance and automatic snapshot recovery', 'single reconnecting stream and project isolation', 'private endpoint authentication and public-state credential checks'] }, null, 2));
-    console.log('PRODUCT_WEB_FAULT_ACCEPTANCE_PASSED (real services/Git/Hook/files/index; controlled failures; desktop only)');
+    console.log(`PRODUCT_WEB_FAULT_ACCEPTANCE_PASSED ${proof} (real services/Git/Hook/files/index; controlled failures; desktop only)`);
   } catch (error) {
     if (browser) { console.error(await browser.evaluate('document.body.innerText')); await browser.screenshot(path.join(proof, 'failure.png')); }
     throw error;
