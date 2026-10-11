@@ -20,7 +20,7 @@ async function main() {
   const proofFile = path.join(environment.root, `real-secondary-recovery-${Date.now()}.json`);
   const proof = { priorFile, sourceCommit: prior.sourceCommit, commitSha: prior.commitSha, projectId: prior.projectId, sessionId: prior.sessionId, installationReport: environment.installationReport, passed: false };
   const save = () => AtomicFile.writeJsonAtomic(proofFile, proof);
-  const read = async route => { const response = await fetch(new URL(route, environment.url), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok); return response.json(); };
+  const read = async route => { const response = await fetch(new URL(route, environment.url), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, `${route}: HTTP ${response.status}`); return response.json(); };
   try {
     const snapshot = await read(`/api/terminal/sessions/${prior.sessionId}`);
     assert.equal(snapshot.session.state, 'idle');
