@@ -19,7 +19,8 @@ async function main() {
   const agents = flag('--agent') && flag('--agent') !== 'all' ? [flag('--agent')] : ['claude-code', 'codex', 'opencode', 'zcode'];
   assert.ok(agents.every(id => ['claude-code', 'codex', 'opencode', 'zcode'].includes(id)));
   const api = async (route, body) => {
-    const response = await fetch(new URL(route, environment.url), { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) });
+    const startup = Boolean(body) && /^\/api\/terminal\/sessions(?:\/[^/]+\/input)?$/.test(route);
+    const response = await fetch(new URL(route, environment.url), { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(startup ? 100000 : 20000) });
     const result = await response.json(); assert.ok(response.ok, `${route}: ${result.error?.code || (typeof result.error === 'string' ? result.error : response.status)}`); return result;
   };
   const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
