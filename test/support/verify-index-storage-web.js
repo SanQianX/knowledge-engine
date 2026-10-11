@@ -19,7 +19,7 @@ async function main() {
   assert.ok(path.basename(environment.root).startsWith('智脑桌面验收-') && environment.model.startsWith('real Agent and real embeddings'));
   const read = async route => { const response = await fetch(new URL(route, environment.url)); assert.ok(response.ok, route); return response.json(); };
   const oldRoot = (await read('/api/vectorhub/settings')).settings.rootPath;
-  const oldIndexes = fingerprint(oldRoot);
+  let oldIndexes;
   const projects = (await read('/api/projects/aggregated')).projects;
   const locations = projects.map(project => ({ projectId: project.projectId, knowledgePath: project.knowledgePath }));
   const knowledgeBefore = Object.fromEntries(locations.map(project => [project.projectId, fingerprint(project.knowledgePath)]));
@@ -46,6 +46,13 @@ async function main() {
     const sharedFiles = Object.fromEntries(sharedBefore.map(scope => [scope.id, fingerprint(scope.knowledgePath)]));
     const confirmed = (await read('/api/engine/memories')).memories.filter(memory => memory.status === 'confirmed');
     assert.ok(confirmed.length, 'storage acceptance must include actual confirmed memory');
+    const { listMarkdownFiles } = require(path.join(environment.runtimeRoots.engine, 'src/runtime/markdown-knowledge-indexer'));
+    await waitFor(async () => (await read('/api/engine/snapshot')).sharedScopes.every(scope => {
+      const digest = crypto.createHash('sha256');
+      for (const file of listMarkdownFiles(scope.knowledgePath).sort()) digest.update(path.relative(scope.knowledgePath, file)).update('\0').update(fs.readFileSync(file));
+      return scope.index?.status === 'ready' && scope.index.fingerprint === digest.digest('hex');
+    }), 'confirmed memory index finishes before freezing storage baseline', 120000);
+    oldIndexes = fingerprint(oldRoot);
     await browser.evaluate("document.getElementById('openSystem').click()");
     await waitFor(() => browser.evaluate("!document.getElementById('systemDrawer').hidden"), 'system settings');
     await browser.evaluate(`document.getElementById('knowledgeRoot').value=${JSON.stringify(knowledgeRoot)};document.getElementById('saveBrainSettings').click()`);
