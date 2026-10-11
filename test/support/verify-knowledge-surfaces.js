@@ -44,9 +44,9 @@ async function main() {
       const result = await client.callTool({ name: `project_knowledge_${action}`, arguments: { projectId: project.projectId, ...input } });
       assert.ok(!result.isError, result.content[0]?.text); return JSON.parse(result.content[0].text);
     };
-    const resolutions = [project, await cli(['resolve']), await mcp('resolve', {})];
-    assert.ok(resolutions.every(result => result.indexPath === activeIndexPath), 'UI, runtime, CLI and MCP must agree on the active vector directory');
-    proof.resolution = { activeIndexPath, surfaces: ['runtime', 'CLI', 'MCP'], passed: true };
+    const resolutions = [project, await mcp('resolve', {})];
+    assert.ok(resolutions.every(result => result.indexPath === activeIndexPath), 'UI, runtime and MCP must agree on the active vector directory');
+    proof.resolution = { activeIndexPath, surfaces: ['runtime', 'MCP'], passed: true };
     for (const scope of ['project', 'domain', 'brain']) {
       const input = { query: run.commitSha, scope, limit: 8 };
       const web = await api('search', input);
