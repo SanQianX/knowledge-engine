@@ -3,6 +3,7 @@ const { fork, execFile } = require('node:child_process');
 const path = require('node:path');
 const { frameFrozenEvidence } = require('./analysis-contract');
 const { finalizeAnalysisOutput } = require('./analysis-output');
+const { freezeKnowledgeTargets } = require('./knowledge-targets');
 
 class HeadlessAnalyzer {
   constructor({ resolveProfile, timeoutMs = 15 * 60 * 1000, workerPath = path.join(__dirname, 'analysis-worker.js') } = {}) { this.resolveProfile = resolveProfile; this.timeoutMs = timeoutMs; this.workerPath = workerPath; this.children = new Map(); this.closed = false; }
@@ -13,6 +14,7 @@ class HeadlessAnalyzer {
     const refs = [`commit:${input.claim.commitSha}`, `patch:${input.claim.patchHash}`, `conversation:${input.claim.conversationSnapshotHash}`, `retrieval:${input.claim.retrievalManifestHash}`];
     const contract = `\n\nOUTPUT CONTRACT\nRead frozen evidence only beneath ${input.evidenceRoot}. Write only beneath ${input.stagingPath}. Put Markdown under files/<allowed-path> (README.md, GOAL.md, ARCHITECTURE.md, modules/*.md, changes/*.md). Write ${input.manifestPath} with schema knowledge-staging-manifest/v1, projectId ${input.projectId}, runId ${input.claim.runId}, commitSha ${input.claim.commitSha}, and non-empty operations. Each operation needs path, operation (create/replace/delete), reason, and evidenceReferences ${JSON.stringify(refs)}. Omit sha256: the engine seals staged bytes itself. Do not modify code, final knowledge, other runs, or indexes. Do not invent intent if conversations are unavailable.`;
     const pathContract = `\nPATH CONTRACT (mandatory): operations[].path is the FINAL knowledge-relative POSIX path, NEVER a staging path and NEVER prefixed with "files/". Example: write the physical file ${path.join(input.stagingPath, 'files', 'changes', `${input.claim.commitSha.slice(0, 12)}.md`)} but put "path": "changes/${input.claim.commitSha.slice(0, 12)}.md" in manifest.json. Use forward slashes even on Windows. Minimal manifest shape: ${JSON.stringify({ schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, operations: [{ path: `changes/${input.claim.commitSha.slice(0, 12)}.md`, operation: 'create', reason: 'Describe the evidence-backed change', evidenceReferences: refs }] })}`;
+    const targetContract = freezeKnowledgeTargets(input).contract;
     await new Promise((resolve, reject) => {
       const env = { ...process.env };
       delete env.CLAUDECODE;
@@ -50,7 +52,7 @@ class HeadlessAnalyzer {
       });
       const memoryContract = '\nYou may optionally include memoryCandidates in manifest.json: [{text, entryId, quote}]. Only suggest durable user preferences explicitly evidenced in a promoted document; quote must be an exact excerpt (at least 8 characters) from that document. Never infer preferences from code style alone. These stay unconfirmed until the user accepts them.';
       const languageContract = input.config?.knowledgeLanguage === 'en-US' ? '\nOUTPUT LANGUAGE: English. Preserve identifiers and verbatim evidence quotations.' : '\n输出语言：简体中文。知识正文、operations[].reason 与候选记忆用简体中文；代码标识、路径、哈希和原文证据引用保持不变。';
-      child.send({ profile, projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, prompt: `${frameFrozenEvidence(input.prompt)}${contract}${pathContract}${memoryContract}${languageContract}`, manifestPath: input.manifestPath, stagingPath: input.stagingPath, safetyPolicy: input.safetyPolicy }, error => { if (error) stop(Object.assign(new Error('无法发送分析任务。'), { code: 'WORKER_START_FAILED', retryable: true })); });
+      child.send({ profile, projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, prompt: `${frameFrozenEvidence(input.prompt)}${contract}${pathContract}${targetContract}${memoryContract}${languageContract}`, manifestPath: input.manifestPath, stagingPath: input.stagingPath, safetyPolicy: input.safetyPolicy }, error => { if (error) stop(Object.assign(new Error('无法发送分析任务。'), { code: 'WORKER_START_FAILED', retryable: true })); });
     });
     finalizeAnalysisOutput(input);
     return { ok: true };
