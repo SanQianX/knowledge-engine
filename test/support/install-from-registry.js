@@ -35,6 +35,7 @@ try {
   const lock = JSON.parse(fs.readFileSync(path.join(installedRoot, 'package-lock.json')));
   assert.ok(Object.values(lock.packages).every(entry => !entry.link && (!entry.resolved || entry.resolved.startsWith(registry))), 'all dependencies must come from the official registry, not file/source overrides');
   const dist = JSON.parse(npm(['view', `${packageName}@${expected}`, 'dist', '--json']));
+  const sourceCommit = npm(['view', `${packageName}@${expected}`, 'gitHead']).trim();
   assert.equal(lock.packages['node_modules/@sanqianx/project-knowledge'].integrity, dist.integrity);
   const modules = require(path.join(core, '_site/scripts/verify-product-runtime')).verifyProductRuntime(core);
   const check = spawnSync(process.execPath, [path.join(core, '_site/scripts/verify-module-runtime.js')], { encoding: 'utf8', windowsHide: true });
@@ -43,11 +44,21 @@ try {
   for (const [key, module] of Object.entries(modules)) assert.ok(module.directory.startsWith(installedRoot + path.sep), `${key} must resolve inside the installation`);
   const engine = JSON.parse(fs.readFileSync(path.join(core, '_modules/knowledge-engine/package.json')));
   assert.equal(Object.keys(engine.dependencies || {}).length, 0);
+  const moduleReports = {};
+  for (const [key, module] of Object.entries(modules)) {
+    const metadata = JSON.parse(fs.readFileSync(path.join(module.directory, 'package.json')));
+    const name = `${metadata.name}@${metadata.version}`;
+    const published = JSON.parse(npm(['view', name, 'dist', '--json']));
+    const lockPath = path.relative(installedRoot, module.directory).replace(/\\/g, '/');
+    assert.equal(lock.packages[lockPath].integrity, published.integrity, `${key} integrity must match the official registry`);
+    moduleReports[key] = { version: module.version, directory: module.directory, packageName: metadata.name, distIntegrity: published.integrity, sourceCommit: npm(['view', name, 'gitHead']).trim() };
+  }
+  const vendor = JSON.parse(fs.readFileSync(path.join(core, 'vendor-manifest.json')));
   const report = {
     schema: 'project-knowledge/installed-registry/v1', registry, packageName, tag, version: pkg.version,
     installedRoot, core, integrityPassed: true, freshCache: !process.env.KB_REGISTRY_ACCEPTANCE_CACHE, distIntegrity: dist.integrity,
-    modules: Object.fromEntries(Object.entries(modules).map(([key, module]) => [key, { version: module.version, directory: module.directory }])),
-    engineVersion: engine.version, sdk: resolve.resolve('@anthropic-ai/claude-agent-sdk'), checkedAt: new Date().toISOString(),
+    sourceCommit, modules: moduleReports,
+    engineVersion: engine.version, vendorManifest: vendor, sdk: resolve.resolve('@anthropic-ai/claude-agent-sdk'), checkedAt: new Date().toISOString(),
   };
   const file = path.join(installedRoot, 'registry-installation.json'); AtomicFile.writeJsonAtomic(file, report);
   process.stdout.write(`REGISTRY_INSTALLATION ${file}\n`);
