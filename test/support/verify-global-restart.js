@@ -18,7 +18,9 @@ async function main() {
   const proof = path.resolve(__dirname, '../../.agent-state/acceptance/existing-v5', `restart-${Date.now()}`);
   fs.mkdirSync(proof, { recursive: true });
   const read = async route => { const response = await fetch('http://127.0.0.1:5757' + route, { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, route); return response.json(); };
-  const before = await read('/api/runtime/identity'); assert.equal(before.dataDir, dataDir); assert.equal(before.version, '5.0.9-rc.19');
+  const expectedVersion = process.argv[3] || require(path.join(core, 'package.json')).version;
+  assert.match(expectedVersion, /^5\.0\.\d+(?:-rc\.\d+)?$/);
+  const before = await read('/api/runtime/identity'); assert.equal(before.dataDir, dataDir); assert.equal(before.version, expectedVersion);
   const runsBefore = (await read('/api/engine/runs')).runs;
   assert.ok(runsBefore.every(run => run.state === 'succeeded'), 'do not interrupt queued or active user maintenance');
   const projectIds = (await read('/api/projects/aggregated')).projects.map(project => project.projectId).sort();
