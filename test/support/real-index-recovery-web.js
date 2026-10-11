@@ -43,7 +43,8 @@ async function main() {
     assert.equal(after.promotedAt, before.promotedAt);
     assert.deepEqual(fingerprint(), before.knowledgeHashes);
     assert.equal(after.indexAttempts, before.indexAttempts + 1);
-    const index = JSON.parse(fs.readFileSync(path.join(environment.root, 'indexes', failed.projectId, 'index.json')));
+    const indexRoot = (await read('/api/vectorhub/settings')).settings.rootPath;
+    const index = JSON.parse(fs.readFileSync(path.join(indexRoot, failed.projectId, 'index.json')));
     assert.ok(index.items.length && index.items.every(item => item.vector.length === 1536));
     await waitFor(() => evaluate("document.getElementById('activityUpdates').textContent.includes('索引：succeeded')"), 'automatic UI refresh');
     await browser.screenshot(path.join(proof, 'recovered-1920.png'));

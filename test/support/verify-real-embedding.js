@@ -13,9 +13,14 @@ async function main() {
   assert.equal(settings.settings.apiKey, '', 'public configuration must not expose credentials');
   assert.equal(settings.settings.provider, 'minimax');
   assert.equal(settings.settings.model, 'embo-01');
+  const brain = await read('/api/brain');
+  const indexRoot = settings.settings.rootPath;
+  assert.equal(indexRoot, path.join(brain.knowledgeRoot, '.indexes'));
+  assert.equal(brain.configuration.indexStorage.actualPath, indexRoot);
+  assert.equal(brain.configuration.indexStorage.status, 'ready');
   const dimensions = {};
   for (const id of ['project-real-a', 'project-real-b']) {
-    const index = JSON.parse(fs.readFileSync(path.join(environment.root, 'indexes', id, 'index.json'), 'utf8'));
+    const index = JSON.parse(fs.readFileSync(path.join(indexRoot, id, 'index.json'), 'utf8'));
     assert.ok(index.items.length, 'real promoted knowledge must have indexed chunks');
     assert.ok(index.items.every(item => item.vector.length === 1536 && item.vector.every(Number.isFinite)), 'real embo-01 vectors must replace the controlled 2D index');
     dimensions[id] = { chunks: index.items.length, dimension: 1536 };
@@ -31,7 +36,7 @@ async function main() {
   const result = await response.json();
   assert.equal(result.health.index, 'ok', 'unified retrieval must actually use the real vector provider, not silently degrade');
   assert.ok(result.results.length && result.results.some(row => row.commitSha), 'engine must retain promoted commit attribution');
-  AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-embedding-acceptance.json'), { passed: true, verifiedAt: new Date().toISOString(), mode: environment.model, installationSource: environment.installationSource, dimensions, semanticResults: search.results.length, engineResults: result.results.length, citedCommits: [...new Set(result.results.map(row => row.commitSha).filter(Boolean))], secretsExposed: false });
+  AtomicFile.writeJsonAtomic(path.join(environment.root, 'real-embedding-acceptance.json'), { passed: true, verifiedAt: new Date().toISOString(), mode: environment.model, installationSource: environment.installationSource, indexRoot, dimensions, semanticResults: search.results.length, engineResults: result.results.length, citedCommits: [...new Set(result.results.map(row => row.commitSha).filter(Boolean))], secretsExposed: false });
   process.stdout.write('REAL_EMBEDDING_ACCEPTANCE_PASSED dimension=1536\n');
 }
 main().catch(error => { process.stderr.write(`${error.code || 'ACCEPTANCE_FAILED'}: ${error.message}\n`); process.exitCode = 1; });
