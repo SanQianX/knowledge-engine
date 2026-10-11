@@ -33,7 +33,8 @@ async function main() {
     await waitFor(() => frame("(()=>{if(document.getElementById('pop-model').hidden)document.getElementById('btn-model').click();return [...document.querySelectorAll('#pop-model button')].some(button=>button.textContent.includes('MiniMax-M3'))})()"), 'real model configured');
     const selectedModel = await frame("(()=>{const button=[...document.querySelectorAll('#pop-model button')].find(button=>button.textContent.includes('MiniMax-M3'));const model=button.querySelector('.grow').textContent.trim();button.click();return model})()");
     await waitFor(() => frame(`document.getElementById('model-label').textContent.includes(${JSON.stringify(selectedModel)}) && document.getElementById('pop-model').hidden`), 'selected model applied');
-    await frame("(()=>{const field=document.getElementById('chat-input');field.value='请先参考注入的项目知识，简要说明知识库为什么由引擎统一写入，并引用知识单写者相关的真实提交 SHA。不要调用工具或修改文件。查询关键词：知识、提交、单写者。';field.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('btn-send').click()})()");
+    const prompt = `请先参考注入的项目知识，简要说明知识库为什么由引擎统一写入，并引用提交 ${sha} 对应的真实知识依据。不要调用工具或修改文件。查询关键词：知识、提交、单写者、${sha}。`;
+    await frame(`(()=>{const field=document.getElementById('chat-input');field.value=${JSON.stringify(prompt)};field.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('btn-send').click()})()`);
     await waitFor(() => frame("document.getElementById('btn-send').title==='停止'"), 'UI send starts real task');
     const sentSessionId = await frame('state.activeSessionId');
     assert.ok(sentSessionId);
