@@ -43,8 +43,13 @@ async function main() {
       assert.ok(previous.integrityPassed && next.integrityPassed && next.schema === 'project-knowledge/installed-registry/v1');
       assert.notEqual(next.version, previous.version, 'an upgrade receipt requires distinct official package versions');
       assert.equal(next.engineVersion, previous.engineVersion, 'this no-rebuild upgrade check requires the same source-policy runtime');
-      for (const key of Object.keys(previous.modules)) assert.equal(next.modules[key].version, previous.modules[key].version);
-      report.upgrade = { before: previous.version, after: next.version, verifiedRegistryBytes: true };
+      const workbenchOnly = process.argv.includes('--upgrade-workbench');
+      for (const key of Object.keys(previous.modules)) {
+        if (workbenchOnly && key === 'terminal') continue;
+        assert.equal(next.modules[key].version, previous.modules[key].version);
+      }
+      if (workbenchOnly) assert.notEqual(next.modules.terminal.version, previous.modules.terminal.version);
+      report.upgrade = { before: previous.version, after: next.version, verifiedRegistryBytes: true, workbenchOnly };
     } else assert.equal(current.installationReport, report.before.installationReport);
     assert.equal(current.root, report.before.root);
     assert.equal(current.indexRoot, report.before.indexRoot);

@@ -22,6 +22,8 @@ async function main() {
   const priorFile = resumeAt < 0 ? null : path.resolve(process.argv[resumeAt + 1]);
   if (priorFile) { assert.equal(path.dirname(priorFile), environment.root); assert.match(path.basename(priorFile), /^real-secondary-development-\d+\.json$/); }
   const priorTask = priorFile && JSON.parse(fs.readFileSync(priorFile));
+  const repairCitation = process.argv.includes('--repair-citation');
+  assert.ok(!repairCitation || priorTask, 'citation correction requires the original failed acceptance receipt');
   const proofFile = path.join(environment.root, `real-secondary-development-${Date.now()}.json`);
   const { redactValue } = require(path.join(environment.runtimeRoots.shell, '_site/lib/structured-logger'));
   const { ProfileStore } = require(path.join(environment.runtimeRoots.workbench, 'packages/server/lib/profile-store'));
@@ -52,20 +54,30 @@ async function main() {
     }
     proof.sessionId = sessionId;
     const cli = path.join(environment.runtimeRoots.shell, 'bin/project-knowledge-kb.js').replace(/\\/g, '/');
-    proof.rawPrompt = `在当前受控测试仓库完成一次真实二次开发。先实际调用终端工具执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，读取生成的知识，不能仅凭此提示猜测知识。基于检索到的单写者约束，仅新增 ${files[0]} 和 ${files[1]}：CommonJS 导出 isKnowledgeWriter(owner)，只有 owner 为 engine-promotion 时返回 true，其他值返回 false；源文件注释引用实际知识 entry_id 和完整 commitSha。测试使用 Node 内置 assert，检查真/假两种情况，运行 node ${files[1]} 并输出 SECONDARY_POLICY_OK。不要修改其他文件、安装依赖、读取凭据或自行提交。最终回答引用实际检索依据和测试结果。`;
+    proof.rawPrompt = `在当前受控测试仓库完成一次真实二次开发。先实际调用终端工具执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，完整保留 CLI 输出，不要用管道裁剪检索证据。最新提交不一定包含所需规则；请再实际检索 single-writer / engine promotion，并 get 读取包含单写者原文的真实条目，不能凭此提示猜测或引用无关条目。基于实际读取的单写者约束，仅新增 ${files[0]} 和 ${files[1]}：CommonJS 导出 isKnowledgeWriter(owner)，只有 owner 为 engine-promotion 时返回 true，其他值返回 false；源文件注释引用实际知识 entry_id 和该事实的完整 commitSha。测试使用 Node 内置 assert，检查真/假两种情况，运行 node ${files[1]} 并输出 SECONDARY_POLICY_OK。不要修改其他文件、安装依赖、读取凭据或自行提交。最终回答引用实际检索依据和测试结果。`;
     if (priorTask) {
       const existing = await api(`/api/terminal/sessions/${sessionId}`);
-      proof.rawPrompt = existing.events.find(event => event.type === 'claude/user-prompt')?.text;
+      proof.rawPrompt = existing.events.findLast(event => event.type === 'claude/user-prompt' && event.text?.includes(prior.commitSha) && files.every(file => event.text.includes(file)))?.text;
       assert.ok(proof.rawPrompt?.includes(prior.commitSha) && files.every(file => proof.rawPrompt.includes(file)));
+      if (repairCitation) {
+        proof.beforeCorrection = files.map(file => ({ path: file, sha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex') }));
+        proof.rawPrompt = `核验并修正上一轮二次开发的知识引用。${prior.commitSha} 对应的新增草稿记录没有单写者事实，不能把它当作该规则的依据。先实际执行 node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${prior.commitSha} --scope project --json，再用同一知识 CLI 检索 single-writer / engine promotion 规则，get 读取真实条目并核对原文及完整提交 SHA。完整保留这些 CLI 的 JSON 输出，不能通过管道裁剪，因为需要验证后端及知识原文的证据。仅允许修改 ${files[0]} 和 ${files[1]}：保留既有 isKnowledgeWriter 实现，以实际读取的包含单写者规则的知识 entry_id 和 commitSha 修正源文件注释；如果引用已经正确，也请再次保存源文件并在注释补充“引用已经通过实际知识检索核对”。不得伪造规则或借用无关条目的 SHA。运行 node ${files[1]} 输出 SECONDARY_POLICY_OK，最终回答引用实际依据和测试结果。不得修改其他文件、安装依赖、读取凭据或自行提交。`;
+        save(); await api(`/api/terminal/sessions/${sessionId}/input`, { text: proof.rawPrompt });
+      }
     } else { save(); await api(`/api/terminal/sessions/${sessionId}/input`, { text: proof.rawPrompt }); }
     const taskDeadline = Date.now() + 240000;
     let snapshot;
     while (Date.now() < taskDeadline) {
       snapshot = await api(`/api/terminal/sessions/${sessionId}`);
+      if (repairCitation || priorTask?.beforeCorrection) {
+        const turnAt = snapshot.events.findLastIndex(event => event.type === 'claude/user-prompt' && event.text === proof.rawPrompt);
+        assert.ok(turnAt >= 0, 'correction must be a real Agent turn, not manual file edits');
+        snapshot = { ...snapshot, events: snapshot.events.slice(turnAt) };
+      }
       const error = snapshot.events.find(e => e.type === 'claude/error' || e.type === 'claude/result' && e.isError);
       assert.ok(!error, error?.message || error?.result);
       if (snapshot.session.state === 'idle' && snapshot.events.at(-1)?.type === 'claude/turn-end') break;
-      if (priorTask && snapshot.session.state === 'aborted') {
+      if (priorTask && !repairCitation && snapshot.session.state === 'aborted') {
         const states = snapshot.events.filter(event => event.type === 'claude/state');
         assert.equal(states.at(-1)?.reason, 'no-active-subprocess'); assert.equal(states.at(-2)?.state, 'idle');
         proof.sessionTeardown = 'original harness aborted an already completed turn'; break;
