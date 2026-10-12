@@ -26,7 +26,7 @@ function snapshot(dataDir, core) {
   const stateFile = path.join(dataDir, 'knowledge-engine/engine-state.json');
   const state = JSON.parse(fs.readFileSync(stateFile));
   return {
-    dataDir, core, version: require(path.join(core, 'package.json')).version, recordedAt: new Date().toISOString(),
+    dataDir, core, version: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, recordedAt: new Date().toISOString(),
     projects: registry.listIds().map(projectId => {
       const config = projects.readConfig(projectId); const projectState = projects.readState(projectId);
       return { projectId, repoPath: config.repoPath, knowledgePath: config.knowledgePath, brainId: config.brainId, domainId: config.domainId, trackingStartCommit: projectState.trackingStartCommit, knowledgeFiles: files(config.knowledgePath).filter(file => file.endsWith('.md')).map(file => ({ file, sha256: hash(file) })) };

@@ -33,6 +33,7 @@ async function main() {
   assert.equal(edited.memory.status, 'confirmed');
   const doctor = await api('/api/terminal/system/doctor'), cli = doctor.agents['claude-code'].resolvedExecutable;
   const pluginDirectory = path.join(core, 'plugins/project-knowledge');
+  const userConfiguration = process.argv.includes('--user-config');
   assert.ok(fs.existsSync(path.join(pluginDirectory, 'hooks/claude.json')));
   const sessionId = crypto.randomUUID(), config = path.join(environment.root, `automatic-cli-${sessionId}`);
   fs.mkdirSync(config, { recursive: true });
@@ -73,16 +74,17 @@ async function main() {
     });
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
-  const args = ['--plugin-dir', pluginDirectory, '--settings', settingsFile, '--print', prompt, '--output-format', 'stream-json', '--verbose', '--session-id', sessionId, '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--debug-file', debug, '--model', profile.models.default];
+  const args = [...(userConfiguration ? [] : ['--plugin-dir', pluginDirectory]), '--settings', settingsFile, '--print', prompt, '--output-format', 'stream-json', '--verbose', '--session-id', sessionId, '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--debug-file', debug, '--model', profile.models.default];
   const env = { ...process.env, CLAUDE_CONFIG_DIR: config, KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ANTHROPIC_AUTH_TOKEN: profile.apiKey, ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.address().port}`, NODE_PATH: '' };
   delete env.CLAUDECODE; delete env.KB_KNOWLEDGE_CONTEXT;
+  if (userConfiguration) { if (process.env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR; else delete env.CLAUDE_CONFIG_DIR; }
   const child = spawn(/\.[cm]?js$/i.test(cli) ? process.execPath : cli, /\.[cm]?js$/i.test(cli) ? [cli, ...args] : args, { cwd: project.workspacePath, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout = (stdout + b).slice(-8 * 1024 * 1024); }); child.stderr.on('data', b => { stderr = (stderr + b).slice(-12000); });
   const timer = setTimeout(() => child.kill(), 240000);
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     const events = stdout.split(/\r?\n/).filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-    report.native = { code, sessionId, cliVersion: doctor.agents['claude-code'].versionProbe.version, prompt, events, stderr, modelRequests, configuration: 'isolated native control; npm/source plugin loaded explicitly, not Workbench' }; save();
+    report.native = { code, sessionId, cliVersion: doctor.agents['claude-code'].versionProbe.version, prompt, events, stderr, modelRequests, configuration: userConfiguration ? 'existing user plugin configuration, no plugin-directory override, not Workbench' : 'isolated native control; npm/source plugin loaded explicitly, not Workbench' }; save();
     assert.equal(code, 0); assert.ok(events.some(e => e.type === 'result' && !e.is_error));
     const firstDevelopment = modelRequests.find(request => request.containsTask && !request.isTitleRequest);
     assert.equal(firstDevelopment?.containsMemory, true, 'confirmed memory must arrive on the first development model request; only the explicitly identified native title generator is auxiliary');
@@ -102,6 +104,20 @@ async function main() {
     const contextB = await api('/api/engine/context', { repoPath: projectB.workspacePath, query: '实现 JSON 导出' });
     assert.ok(!JSON.stringify(contextB).includes(marker));
     report.cases.push({ name: 'project-exclusive edited preference does not enter another project', passed: true, projectId: projectB.projectId });
+    if (process.argv.includes('--commit')) {
+      const git = args => execFileSync('git', args, { cwd: project.workspacePath, encoding: 'utf8', windowsHide: true }).trim();
+      git(['add', '--', path.basename(filename)]); git(['commit', '-qm', 'acceptance: implement using automatic knowledge context']);
+      const commitSha = git(['rev-parse', 'HEAD']), deadline = Date.now() + 15 * 60 * 1000;
+      let run;
+      while (Date.now() < deadline) { run = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.commitSha === commitSha); assert.ok(!['failed', 'index-pending'].includes(run?.state), run?.error?.code); if (run?.state === 'succeeded') break; await new Promise(resolve => setTimeout(resolve, 1500)); }
+      assert.equal(run?.state, 'succeeded'); assert.equal(run.indexState, 'succeeded');
+      const next = await api('/api/engine/context', { repoPath: project.workspacePath, query: '维护 JSON 导出模块 exportRecords 的参数校验与返回字段' });
+      assert.ok(next.facts.some(ref => ref.commitSha === commitSha), 'a following development query must retrieve the actual new commit');
+      const conversation = JSON.parse(fs.readFileSync(path.join(environment.root, 'engine/runtime/projects', project.projectId, 'commit-conversations', commitSha + '.json')));
+      assert.ok(conversation.turns.some(turn => turn.sessionId === sessionId && turn.userEvents.some(event => event.content === prompt)));
+      assert.ok(!conversation.turns.flatMap(turn => turn.userEvents).some(event => event.content.includes(marker)), 'injected memory must not become a forged user instruction');
+      report.cases.push({ name: 'native development commit automatically promotes, indexes and becomes next-task context with original capture', passed: true, commitSha, runId: run.runId, references: next.facts.map(r => ({ entryId: r.entryId, commitSha: r.commitSha })) });
+    }
     report.passed = true; report.finishedAt = new Date().toISOString(); save(); console.log('REAL_AUTOMATIC_CONTEXT_PASSED ' + output);
   } catch (error) { report.failure = String(error.message).slice(0, 1600); save(); throw error; }
   finally { clearTimeout(timer); proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); if (fs.existsSync(debug)) AtomicFile.writeFileAtomic(debug, redactValue(fs.readFileSync(debug, 'utf8'), { secrets: [profile.apiKey] })); }
