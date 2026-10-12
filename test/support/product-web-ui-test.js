@@ -313,7 +313,7 @@ async function main() {
     assert.equal(path.dirname(root), path.resolve(os.tmpdir())); assert.ok(path.basename(root).startsWith('智脑桌面验收-'));
     // Windows can retain an exited browser/worker's directory handle briefly.
     // The exact owned root was checked above; never widen cleanup on failure.
-    fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 }
 main().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
