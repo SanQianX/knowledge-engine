@@ -26,13 +26,19 @@ async function main() {
   const projects = (await api('/api/projects/aggregated')).projects;
   const project = projects.find(p => p.projectId === 'project-real-a');
   const memory = (await api('/api/engine/memories')).memories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
-  const marker = memory?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0]; assert.ok(marker);
+  let marker = memory?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0]; assert.ok(marker);
+  const priorMarker = marker;
+  if (process.argv.includes('--edit-memory')) {
+    marker = 'AUTOCTX-' + crypto.randomBytes(12).toString('hex');
+    const edited = await api('/api/engine/memories/' + memory.id, { text: `本项目所有 JSON 导出对象都包含 memoryLabel 字段，其值固定为 ${marker}；错误文案使用简体中文。`, scopeType: 'project', scopeId: project.projectId, status: 'confirmed' }, 'PATCH');
+    assert.equal(edited.memory.status, 'confirmed');
+  }
   const cli = (await api('/api/terminal/system/doctor')).agents.zcode.cli.path;
   const root = fs.mkdtempSync(path.join(environment.root, 'native-zcode-')), configFile = path.join(root, '.zcode/cli/config.json');
   const manager = new IntegrationManager({ rootDir: core, homeDir: root, zcodeConfigFile: configFile, bridgeHomeDir: path.join(environment.root, 'events') });
   await manager.installCaptureZCode(); manager.installZCode();
   const output = path.join(root, 'result.json'), requests = [], events = [];
-  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: '0.16.9', marker, projectId: project.projectId, startedAt: new Date().toISOString() };
+  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: '0.16.9', marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), projectId: project.projectId, startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const filename = path.join(project.workspacePath, 'export-zcode-' + crypto.randomUUID() + '.cjs');
   const prompt = `需求已确定，无需追问。请在当前项目实现 CommonJS 模块，只新增文件 ${JSON.stringify(filename)}。导出 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；非数组时抛出 Error。遵循已有接口约定，不要提交或修改其它文件，完成后简短说明。`;
