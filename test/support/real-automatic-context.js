@@ -1,0 +1,72 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const crypto = require('node:crypto');
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const { spawn } = require('node:child_process');
+const AtomicFile = require('../../src/runtime/atomic-file');
+
+async function main() {
+  const environment = JSON.parse(fs.readFileSync(process.argv[2]));
+  assert.equal(path.dirname(environment.root), path.resolve(os.tmpdir()));
+  assert.ok(environment.model.startsWith('real Agent and real embeddings'));
+  const core = environment.runtimeRoots.shell;
+  const { ProfileStore } = require(path.join(environment.runtimeRoots.workbench, 'packages/server/lib/profile-store'));
+  const { redactValue } = require(path.join(core, '_site/lib/structured-logger'));
+  const profile = new ProfileStore({ dataDir: path.join(environment.root, 'workbench') }).runtimeProfile('acceptance-model');
+  const api = async (route, body, method) => { const response = await fetch(new URL(route, environment.url), { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); const data = await response.json(); assert.ok(response.ok && data.ok !== false, `${route}: ${data.error?.code || data.error || response.status}`); return data; };
+  const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
+  const knownMemories = (await api('/api/engine/memories')).memories;
+  const candidate = knownMemories.find(m => m.status === 'candidate' && m.evidence.projectId === project.projectId) || knownMemories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
+  assert.ok(candidate, 'evidenced candidate from real maintenance required');
+  for (const previous of knownMemories.filter(m => m.id !== candidate.id && m.status === 'confirmed' && m.text.includes('AUTOCTX-'))) await api(`/api/engine/memories/${previous.id}`, { status: 'ignored' }, 'PATCH');
+  const marker = `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
+  const output = path.join(environment.root, `real-automatic-context-${Date.now()}.json`);
+  const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, marker, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
+  const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
+  const edited = await api(`/api/engine/memories/${candidate.id}`, { text: `本项目所有 JSON 导出对象都包含 memoryLabel 字段，其值固定为 ${marker}；错误文案使用简体中文。`, scopeType: 'project', scopeId: project.projectId, status: 'confirmed' }, 'PATCH');
+  assert.equal(edited.memory.status, 'confirmed');
+  const doctor = await api('/api/terminal/system/doctor'), cli = doctor.agents['claude-code'].resolvedExecutable;
+  const pluginDirectory = path.join(core, 'plugins/project-knowledge');
+  assert.ok(fs.existsSync(path.join(pluginDirectory, 'hooks/claude.json')));
+  const sessionId = crypto.randomUUID(), config = path.join(environment.root, `automatic-cli-${sessionId}`);
+  fs.mkdirSync(config, { recursive: true });
+  const settingsFile = path.join(config, 'settings.json');
+  const { IntegrationManager } = require(path.join(core, '_site/lib/integration-installer'));
+  await new IntegrationManager({ rootDir: core, homeDir: config, env: {}, claudeSettingsFile: settingsFile, bridgeHomeDir: path.join(environment.root, 'events') }).installCaptureClaude();
+  const filename = path.join(project.workspacePath, `export-${sessionId}.cjs`);
+  const prompt = `需求已确定，无需追问。请在当前项目实现一个 CommonJS 模块，只新增绝对路径 ${JSON.stringify(filename)}。模块导出函数 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；参数不是数组时抛出 Error。遵循当前项目已有的接口约定。不要提交，不要修改其它文件。完成后简短说明。`;
+  assert.ok(!/knowledge|知识库|MCP|检索|memoryLabel|AUTOCTX/i.test(prompt.replace(JSON.stringify(filename), '[destination]')));
+  const debug = path.join(config, 'native-debug.log');
+  const args = ['--plugin-dir', pluginDirectory, '--settings', settingsFile, '--print', prompt, '--output-format', 'stream-json', '--verbose', '--session-id', sessionId, '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--debug-file', debug, '--model', profile.models.default];
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: config, KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ANTHROPIC_AUTH_TOKEN: profile.apiKey, ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: profile.baseUrl, NODE_PATH: '' };
+  delete env.CLAUDECODE; delete env.KB_KNOWLEDGE_CONTEXT;
+  const child = spawn(/\.[cm]?js$/i.test(cli) ? process.execPath : cli, /\.[cm]?js$/i.test(cli) ? [cli, ...args] : args, { cwd: project.workspacePath, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout = (stdout + b).slice(-8 * 1024 * 1024); }); child.stderr.on('data', b => { stderr = (stderr + b).slice(-12000); });
+  const timer = setTimeout(() => child.kill(), 240000);
+  try {
+    const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    const events = stdout.split(/\r?\n/).filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
+    report.native = { code, sessionId, cliVersion: doctor.agents['claude-code'].versionProbe.version, prompt, events, stderr, configuration: 'isolated native control; npm/source plugin loaded explicitly, not Workbench' }; save();
+    assert.equal(code, 0); assert.ok(events.some(e => e.type === 'result' && !e.is_error));
+    assert.ok(fs.existsSync(filename), 'native client must actually implement the plain task');
+    const text = fs.readFileSync(filename, 'utf8'), module = { exports: {} };
+    vm.runInNewContext(text, { module, exports: module.exports }, { timeout: 1000 });
+    assert.equal(typeof module.exports.exportRecords, 'function');
+    const result = JSON.parse(module.exports.exportRecords([{ id: 1 }])); assert.equal(result.memoryLabel, marker); assert.deepEqual(JSON.parse(JSON.stringify(result.records)), [{ id: 1 }]);
+    const sessionHash = crypto.createHash('sha256').update(sessionId).digest('hex');
+    const logs = (await api('/api/logs?pageSize=500&event=knowledge.context.prepared')).entries.filter(e => e.projectId === project.projectId && e.context?.sessionHash === sessionHash);
+    assert.equal(logs.length, 1, 'one native pre-prompt context request, no duplicate retrieval'); assert.ok(logs[0].context.memoryCount > 0 && logs[0].context.factCount > 0); assert.equal(logs[0].context.status, 'ready');
+    const trace = fs.existsSync(debug) ? fs.readFileSync(debug, 'utf8') : '';
+    report.cases.push({ name: 'plain external request automatically retrieves real indexed facts and confirmed memory', passed: true, operationId: logs[0].operationId, references: logs[0].context.references, file: filename, fileHash: crypto.createHash('sha256').update(text).digest('hex'), actualMemoryEffect: result.memoryLabel, debugContainsMarker: trace.includes(marker), hookEvents: events.filter(e => e.type === 'system' && /hook/.test(e.subtype || '')) });
+    const projectB = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-b');
+    const contextB = await api('/api/engine/context', { repoPath: projectB.workspacePath, query: '实现 JSON 导出' });
+    assert.ok(!JSON.stringify(contextB).includes(marker));
+    report.cases.push({ name: 'project-exclusive edited preference does not enter another project', passed: true, projectId: projectB.projectId });
+    report.passed = true; report.finishedAt = new Date().toISOString(); save(); console.log('REAL_AUTOMATIC_CONTEXT_PASSED ' + output);
+  } catch (error) { report.failure = String(error.message).slice(0, 1600); save(); throw error; }
+  finally { clearTimeout(timer); if (fs.existsSync(debug)) AtomicFile.writeFileAtomic(debug, redactValue(fs.readFileSync(debug, 'utf8'), { secrets: [profile.apiKey] })); }
+}
+main().catch(error => { console.error(error.code || 'REAL_AUTOMATIC_CONTEXT_FAILED', error.message); process.exitCode = 1; });
