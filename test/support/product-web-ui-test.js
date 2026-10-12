@@ -39,10 +39,16 @@ async function main() {
       window.__heldRequests = [];
       window.__registryInFlight = 0;
       window.fetch = async (...args) => {
-        const registry = String(args[0]).includes('/api/projects/aggregated');
+        const registry = ['/api/brain','/api/projects/aggregated','/api/modules/health','/api/engine/snapshot'].includes(String(args[0]).split('?')[0]);
         if (registry) window.__registryInFlight++;
-        try { const response = await nativeFetch(...args); if (window.__holdRoute && String(args[0]).includes(window.__holdRoute)) { window.__holdRoute = ''; await new Promise(resolve => window.__heldRequests.push(resolve)); } return response; }
-        finally { if (registry) window.__registryInFlight--; }
+        let consumed = false;
+        const settled = () => { if (registry && !consumed) { consumed = true; window.__registryInFlight--; } };
+        try {
+          const response = await nativeFetch(...args);
+          if (window.__holdRoute && String(args[0]).includes(window.__holdRoute)) { window.__holdRoute = ''; await new Promise(resolve => window.__heldRequests.push(resolve)); }
+          if (registry) { const json = response.json.bind(response); response.json = async () => { try { return await json(); } finally { settled(); } }; }
+          return response;
+        } catch (error) { settled(); throw error; }
       };
     })();` });
     await browser.send('Page.navigate', { url: environment.url });
