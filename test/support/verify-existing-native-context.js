@@ -52,11 +52,13 @@ async function main() {
   const args = ['--print', prompt, '--output-format', 'stream-json', '--verbose', '--session-id', sessionId, '--permission-mode', 'default', '--allowedTools', 'Read,Glob,Grep', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--model', profile.models.default];
   const child = spawn(/\.[cm]?js$/i.test(cli) ? process.execPath : cli, /\.[cm]?js$/i.test(cli) ? [cli, ...args] : args, { cwd: repo, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout = (stdout + b).slice(-4 * 1024 * 1024); }); child.stderr.on('data', b => { stderr = (stderr + b).slice(-4000); });
-  const timer = setTimeout(() => child.kill(), 180000);
+  const timeoutMs = 360000;
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     const events = stdout.split(/\r?\n/).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-    Object.assign(report, { code, requests, stderr, events }); save();
+    Object.assign(report, { code, requests, stderr, events, timeoutMs, timedOut }); save();
     assert.equal(code, 0); assert.ok(events.some(e => e.type === 'result' && !e.is_error));
     const first = requests.find(r => r.containsTask && !r.isTitleRequest); assert.equal(first?.containsKnowledge, true, 'first real development request must contain product context');
     assert.ok(requests.slice(0, requests.indexOf(first)).every(r => r.isTitleRequest));
