@@ -45,15 +45,22 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     return this.store.state.sharedScopes.filter(s => s.brainId === registration.brainId && (s.kind === 'brain' || range === 'brain' || registration.domainId && s.domainId === registration.domainId)).map(s => ({ projectId: s.id, spaceId: `${s.kind}:${s.id}`, knowledgePath: s.knowledgePath, weight: s.kind === 'brain' ? 0.6 : 0.75, reason: s.kind }));
   }
   scanCurrent(scopes) {
+    const registration = this.store.getProject(scopes.find(s => s.reason === 'primary')?.projectId);
     const ordinary = scopes.filter(s => this.store.getProject(s.projectId));
     const shared = scopes.filter(s => !this.store.getProject(s.projectId));
     const result = super.scanCurrent(ordinary);
+    for (const [id, candidate] of result.candidates) if (candidate.entryId.startsWith('memories/')) result.candidates.delete(id);
     if (!shared.length) return result;
     const scanner = new KnowledgeRetrievalService({ layout: this.layout, projectStore: { readState: () => ({ index: {} }) } });
     const extra = scanner.scanCurrent(shared);
     for (const [id, candidate] of extra.candidates) {
       const scope = this.store.state.sharedScopes.find(s => s.id === candidate.projectId);
-      if (candidate.entryId.startsWith('memories/') && (scope.kind !== 'brain' || candidate.entryId !== 'memories/confirmed.md' || !this.memories?.validFile(scope))) continue;
+      if (candidate.entryId.startsWith('memories/')) {
+        if (!this.memories?.readableEntry(scope, candidate.entryId, registration) || !this.memories.memoryForChunk(scope, candidate.entryId, candidate.headingPath)) continue;
+        const memory = this.memories.memoryForChunk(scope, candidate.entryId, candidate.headingPath), type = this.memories.scopeOf(memory).type;
+        candidate.scopeWeight = { project: 1, domain: 0.75, global: 0.6 }[type];
+        candidate.title = `${{ project: '项目记忆', domain: '领域记忆', global: '全局记忆' }[type]} · ${this.memories.target(memory).name}`;
+      } else if (scopes.find(s => s.projectId === candidate.projectId)?.memoryOnly) continue;
       result.candidates.set(id, candidate);
     }
     result.scopeHealth.push(...extra.scopeHealth);
@@ -97,12 +104,19 @@ class EngineRetrieval extends KnowledgeRetrievalService {
         && (input.scope === 'brain' || p.projectId === registration.projectId || registration.domainId && p.domainId === registration.domainId)).map(p => ({ projectId: p.projectId, spaceId: `project:${p.projectId}`, knowledgePath: p.knowledgePath, weight: p.projectId === registration.projectId ? 1 : 0.88, reason: p.projectId === registration.projectId ? 'primary' : input.scope }));
       scopes.push(...this.sharedScopes(registration, input.scope));
     }
+    if (!scopes.some(s => s.spaceId === `brain:${registration.brainId}`)) {
+      scopes.push(...this.sharedScopes(registration, 'domain').filter(s => s.reason === 'brain').map(s => ({ ...s, memoryOnly: true })));
+    }
     const result = await super.search({ ...input, project, scopes });
     result.results = result.results.map(row => {
       const run = this.store.listRuns(row.scope_project_id).find(r => r.promotedAt && r.staging?.operations?.some(op => op.path === row.entry_id));
       const source = this.store.getProject(row.scope_project_id) || this.store.state.sharedScopes.find(s => s.id === row.scope_project_id);
-      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha: run?.commitSha || null };
+      const memory = source?.kind === 'brain' && row.entry_id.startsWith('memories/') ? this.memories.memoryForChunk(source, row.entry_id, row.heading_path) : null;
+      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha: memory?.evidence.commitSha || run?.commitSha || null, ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id } : {}) };
     });
+    const slots = result.results.map((r, i) => r.memoryId ? i : -1).filter(i => i >= 0);
+    const ordered = slots.map(i => result.results[i]).sort((a, b) => ({ project: 0, domain: 1, global: 2 }[a.memoryScopeType] - { project: 0, domain: 1, global: 2 }[b.memoryScopeType]) || b.score - a.score);
+    slots.forEach((slot, i) => { result.results[slot] = ordered[i]; });
     return result;
   }
   async ask(input) {
@@ -120,7 +134,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     const target = path.resolve(project.knowledgePath, entryId);
     if (!entryId || !/\.md$/i.test(target) || !this.layout.isPathInside(project.knowledgePath, target, { realpath: true })) throw new DomainError('PATH_OUTSIDE_ROOT', '知识文件越界。', { status: 403 });
     if (!fs.existsSync(target) || !fs.statSync(target).isFile() || fs.lstatSync(target).isSymbolicLink()) throw new DomainError('PROJECT_NOT_FOUND', '知识文件不存在。', { status: 404 });
-    if (scope && entryId.startsWith('memories/') && (entryId !== 'memories/confirmed.md' || !this.memories?.validFile(scope))) throw new DomainError('PROJECT_NOT_FOUND', '记忆尚未完成确认写入。', { status: 404 });
+    if (entryId.startsWith('memories/') && (!scope || !this.memories?.readableEntry(scope, entryId, registration))) throw new DomainError('PROJECT_NOT_FOUND', '记忆尚未同步或不适用于当前项目。', { status: 404 });
     return { ok: true, projectId: project.projectId, projectSlug: project.projectId, entryId, source: 'markdown', chunks: [{ chunk_text: fs.readFileSync(target, 'utf8'), entry_id: entryId, space_id: scope ? `${scope.kind}:${scope.id}` : `project:${project.projectId}` }] };
   }
   async history(input) {

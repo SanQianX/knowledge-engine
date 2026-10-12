@@ -48,6 +48,7 @@ const ANALYSIS_PHASES = Object.freeze([
 
 const ERROR_CODES = Object.freeze([
   'INVALID_ARGUMENT',
+  'MEMORY_DUPLICATE',
   'INVALID_TRIGGER',
   'SCHEMA_UNSUPPORTED',
   'DATA_CORRUPT',

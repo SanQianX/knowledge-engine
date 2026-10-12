@@ -40,6 +40,11 @@ class EngineStore {
       for (const [journalId, sequence] of Object.entries(raw.journalCursors || {})) if (!/^(global|sha256:[a-f0-9]{64})$/.test(journalId) || !Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid journal cursor');
       for (const scope of raw.sharedScopes || []) if (!scope || !['brain', 'domain'].includes(scope.kind) || !path.isAbsolute(scope.knowledgePath || '')) throw new Error('Invalid shared scope');
       for (const memory of raw.memories || []) if (!memory || !['candidate', 'confirmed', 'ignored'].includes(memory.status) || typeof memory.text !== 'string' || !memory.evidence?.projectId || !/^[a-f0-9]{40}$/.test(memory.evidence.commitSha || '')) throw new Error('Invalid memory record');
+      for (const memory of raw.memories || []) if (memory.scopeType !== undefined || memory.scopeId !== undefined) {
+        if (!['global', 'domain', 'project'].includes(memory.scopeType)) throw new Error('Invalid memory scope');
+        validateProjectId(memory.scopeId);
+        if (memory.scopeType === 'global' && memory.scopeId !== (memory.brainId || 'brain-default')) throw new Error('Invalid global memory target');
+      }
       this.state = { ...this.state, ...raw };
     } catch (error) {
       if (error.code === 'SCHEMA_UNSUPPORTED') throw error;

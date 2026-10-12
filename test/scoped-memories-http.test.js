@@ -1,0 +1,32 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { createEngineServer } = require('../src/server');
+
+test('real HTTP memory review atomically edits and confirms, snapshots expose ranges, invalid target/provenance do not save', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-memory-http-'));
+  const engine = createEngineServer({ dataDir: root, runtimeToken: 'test-private-token' }); await engine.ready;
+  await new Promise(resolve => engine.server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await engine.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  const address = 'http://127.0.0.1:' + engine.server.address().port;
+  const request = async (route, body, method = 'POST') => { const r = await fetch(address + route, { method: body ? method : 'GET', headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) }); return { status: r.status, json: await r.json() }; };
+  const p = engine.store.addProject({ projectId: 'project-source', repoPath: path.join(root, 'code'), knowledgePath: path.join(root, 'knowledge') }).project;
+  fs.mkdirSync(p.knowledgePath); fs.writeFileSync(path.join(p.knowledgePath, 'README.md'), '# 依据\n\n显式长期偏好：软件保持简单，避免无必要实体。\n');
+  await engine.coordinator.memories.configure([{ kind: 'brain', id: 'brain-default', brainId: 'brain-default', knowledgePath: path.join(root, 'shared') }]);
+  engine.coordinator.memories.capture({ projectId: p.projectId, runId: 'run-test', commitSha: 'a'.repeat(40), promotedAt: new Date().toISOString(), staging: { operations: [{ operation: 'create', path: 'README.md' }], memoryCandidates: [{ text: '原始总结', entryId: 'README.md', quote: '软件保持简单，避免无必要实体。' }] } });
+  const id = (await request('/api/memories')).json.memories[0].id;
+  const evidence = engine.store.state.memories[0].evidence;
+  assert.equal((await request('/api/memories/' + id, { text: '不能保存', scopeType: 'domain', scopeId: 'missing-domain', status: 'confirmed' }, 'PATCH')).status, 400);
+  assert.equal(engine.store.state.memories[0].status, 'candidate'); assert.equal(engine.store.state.memories[0].text, '原始总结');
+  assert.equal((await request('/api/memories/' + id, { evidence: { projectId: 'fake' } }, 'PATCH')).status, 400);
+  const saved = await request('/api/memories/' + id, { text: '审核后的长期偏好', scopeType: 'global', scopeId: 'brain-default', status: 'confirmed' }, 'PATCH');
+  assert.equal(saved.status, 200); assert.equal(saved.json.memory.syncStatus, 'ready');
+  assert.equal(saved.json.memory.originalText, '原始总结'); assert.deepEqual(saved.json.memory.evidence, evidence);
+  const snapshot = (await request('/api/snapshot')).json;
+  assert.equal(snapshot.memories[0].scopeType, 'global'); assert.equal(snapshot.memories[0].text, '审核后的长期偏好');
+  assert.equal((await request('/api/memories?scopeType=project')).json.memories.length, 0);
+  assert.equal((await request('/api/memories?scopeType=global&scopeId=brain-default')).json.memories.length, 1);
+});

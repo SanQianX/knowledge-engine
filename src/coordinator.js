@@ -39,7 +39,14 @@ class EngineCoordinator extends EventEmitter {
     this.sharedIndexJobs = new Map();
     this.sharedIndexDirty = new Set();
     this.sharedIndexQueue = Promise.resolve();
-    this.memories = new MemoryService(store, { onMaterialized: scope => { this.indexSharedScope(scope).catch(() => {}); } });
+    this.memories = new MemoryService(store, {
+      onMaterialized: scope => { this.indexSharedScope(scope).catch(() => {}); },
+      onSyncChange: (scope, code) => {
+        this.emit('progress', store.addEvent({ type: 'memory.sync', scopeId: scope.id, summary: code ? `记忆文件待恢复（${code}）` : '记忆文件已恢复同步' }));
+        const log = code ? 'error' : 'info';
+        Promise.resolve(this.diagnostics[log]('knowledge.memory.' + (code ? 'write_failed' : 'write_recovered'), code ? '记忆状态已保存，文件待恢复。' : '记忆文件已恢复同步。', { phase: 'memory-sync', context: { scopeId: scope.id, code: code || null } })).catch(() => {});
+      },
+    });
     this.projectStore = {
       readConfig: id => { const p = store.getProject(id); if (!p) throw Object.assign(new Error('项目未登记。'), { code: 'PROJECT_NOT_FOUND' }); return { ...p, displayName: p.name, automation: { enabled: true } }; },
       readState: id => store.readRuntime(id),
@@ -291,6 +298,7 @@ class EngineCoordinator extends EventEmitter {
     return run;
   }
   async close() {
+    await this.memories.close();
     this.closed = true; clearInterval(this.poll);
     this.bridge.close?.();
     await this.analyzer.close?.();

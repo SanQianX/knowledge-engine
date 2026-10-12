@@ -24,7 +24,7 @@ test('evidenced candidates, confirm/edit/ignore durability and shared retrieval'
   const retrieval = new EngineRetrieval({ store, memories: service, layout: new RuntimeLayout(store.dataDir), projectStore: { readState: id => store.readRuntime(id) }, vectorUrl: 'http://127.0.0.1:1' });
   assert.ok(!(await retrieval.search({ projectId: project.projectId, query: '保持功能简单', scope: 'brain' })).results.some(r => r.entry_id.startsWith('memories/')));
   const candidate = service.list()[0];
-  await service.update(candidate.id, { text: '非必要不增加功能，保持软件简单', status: 'confirmed' });
+  await service.update(candidate.id, { text: '非必要不增加功能，保持软件简单', status: 'confirmed', scopeType: 'global', scopeId: 'brain-default' });
   assert.ok((await retrieval.search({ projectId: project.projectId, query: '非必要', scope: 'brain' })).results.some(r => r.space_id === 'brain:brain-default' && r.chunk_text.includes('非必要')));
   fs.mkdirSync(scopes[1].knowledgePath, { recursive: true });
   fs.writeFileSync(path.join(scopes[1].knowledgePath, 'README.md'), '# 领域经验\n\n跨项目复用设计约束\n');

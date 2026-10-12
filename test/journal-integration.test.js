@@ -95,8 +95,8 @@ test('real Git hooks → real project journals → durable engine → real vecto
     while (Date.now() < sharedDeadline && runtime.coordinator.sharedIndexJobs.size) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(runtime.store.state.sharedScopes[0].index.status, 'ready');
     const sharedIndex = await manager.hub.search('保持功能简单', { projects: ['scope-brain-brain-default'] });
-    assert.ok(sharedIndex.results.some(r => r.uri.endsWith('confirmed.md') && r.snippet.includes('保持功能简单')), 'confirmed memory reaches the real vector index');
-    const sharedRecall = await runtime.coordinator.retrieval.search({ projectId: registrations[0].projectId, query: '保持功能简单', scope: 'brain' });
+    assert.ok(sharedIndex.results.some(r => r.uri.endsWith(`${memory.scopeId}.md`) && r.snippet.includes('保持功能简单')), 'confirmed scoped memory reaches the real vector index');
+    const sharedRecall = await runtime.coordinator.retrieval.search({ projectId: memory.scopeId, query: '保持功能简单', scope: 'brain' });
     assert.ok(sharedRecall.results.some(r => r.space_id === 'brain:brain-default' && r.match_channels.includes('index:vector-hub')), 'shared scope participates in vector recall');
     await runtime.close();
     const restarted = createEngineServer({ dataDir, analyzer, consume: true, bridgeUrl: `http://127.0.0.1:${bridgeServer.address().port}`, vectorUrl: `http://127.0.0.1:${vectorServer.address().port}` });

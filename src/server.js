@@ -136,7 +136,7 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
   if (method === 'GET' && pathname === '/api/events') return { events: store.listEvents(search.get('limit')).filter(e => !search.get('projectId') || e.projectId === search.get('projectId')) };
   if (method === 'POST' && pathname === '/api/events' && ctx.debug) return { event: store.addEvent(body) };
   if (method === 'POST' && pathname === '/api/bridge/notify') { if (coordinator.consume) coordinator.drain(); return { accepted: true }; }
-  if (method === 'GET' && pathname === '/api/snapshot') return { projects: store.listProjects(), runs: store.listRuns(search.get('projectId')), events: store.listEvents(50), memories: store.state.memories, sharedScopes: store.state.sharedScopes };
+  if (method === 'GET' && pathname === '/api/snapshot') return { projects: store.listProjects(), runs: store.listRuns(search.get('projectId')), events: store.listEvents(50), memories: coordinator.memories.list(), sharedScopes: store.state.sharedScopes };
   throw httpError(404, 'NOT_FOUND', '接口不存在。');
 }
 
