@@ -23,7 +23,11 @@ async function main() {
       const match = /PRODUCT_WEB_(?:UI|FAULT)_ACCEPTANCE_PASSED (.+?) \(real/.exec(raw.tail);
       assert.ok(match, suite.label + ' needs a browser evidence report');
       const evidence = JSON.parse(fs.readFileSync(path.join(match[1], 'report.json')));
-      assert.equal(evidence.passed, true); assert.equal(path.resolve(evidence.installationReport), path.resolve(install === candidate ? candidateFile : formalFile));
+      assert.equal(evidence.passed, true); assert.equal(evidence.installationSource, install.schema);
+      assert.equal(path.resolve(evidence.runtimeRoots.shell), path.resolve(install.core));
+      assert.equal(path.resolve(evidence.runtimeRoots.engine), path.resolve(install.core, '_modules/knowledge-engine'));
+      assert.ok(Object.values(evidence.runtimeRoots).every(root => path.resolve(root).startsWith(path.resolve(install.installedRoot) + path.sep)));
+      if (evidence.installationReport) assert.equal(path.resolve(evidence.installationReport), path.resolve(install === candidate ? candidateFile : formalFile));
       suite.browserReport = path.join(match[1], 'report.json');
     }
     const realSuite = suites.find(s => s.label === prefix + '-real24');
