@@ -31,7 +31,7 @@ async function main() {
   // Git marketplace path avoids that upstream CLI issue. Pin the package's
   // published source commit, then compare plugin bytes with the npm package.
   assert.match(installation.sourceCommit, /^[a-f0-9]{40}$/);
-  const marketplaceSource = 'SanQianX/project-knowledge-base@' + installation.sourceCommit;
+  const marketplaceSource = 'SanQianX/project-knowledge-base' + (process.argv.includes('--tracking-main') ? '' : '@' + installation.sourceCommit);
   const manager = new IntegrationManager({ rootDir: installation.core, marketplaceSource });
   const configFile = path.join(os.homedir(), '.codex', 'config.toml');
   const beforeConfig = fs.readFileSync(configFile, 'utf8');

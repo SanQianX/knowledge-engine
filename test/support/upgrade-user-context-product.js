@@ -10,9 +10,12 @@ const { snapshot, verify } = require('./existing-v5-audit');
 const { latestSuite } = require('./acceptance-progress');
 async function main() {
   const installationFile = path.resolve(process.argv[2]), installation = JSON.parse(fs.readFileSync(installationFile));
-  assert.equal(installation.integrityPassed, true); assert.equal(installation.version, '5.0.11');
+  assert.equal(installation.integrityPassed, true); assert.ok(['5.0.11', '5.0.12'].includes(installation.version));
   const evidence = path.resolve(__dirname, '../../.agent-state/acceptance/system-regression');
-  for (const name of ['context-rc2-shell-source24', 'context-rc2-shell-source22', 'context-rc2-registry24', 'context-rc2-web24', 'context-rc2-web22', 'context-rc2-real-native24']) assert.equal(latestSuite(evidence, name).passed, true, name);
+  const gates = installation.version === '5.0.11'
+    ? ['context-rc2-shell-source24', 'context-rc2-shell-source22', 'context-rc2-registry24', 'context-rc2-web24', 'context-rc2-web22', 'context-rc2-real-native24']
+    : ['source-file-fixed24', 'source-file-fixed22', 'native-final-source24', 'native-final-source22', 'native-rc3-registry24', 'native-rc3-web24', 'native-rc3-web22', 'native-rc3-fault24', 'native-rc3-fault22', 'native-rc3-claude-real24', 'native-rc3-codex-real24', 'native-rc3-zcode-user-real24', 'native-rc3-real-commits24', 'native-rc3-workbench-real24', 'native-rc3-embedding24'];
+  for (const name of gates) assert.equal(latestSuite(evidence, name).passed, true, name);
   const dataDir = path.join(os.homedir(), '.project-knowledge-v5'), core = path.join(process.env.APPDATA, 'npm/node_modules/@sanqianx/project-knowledge');
   const proof = path.join(evidence, 'context-user-upgrade-' + Date.now());
   const report = { passed: false, installationFile, expectedVersion: installation.version, startedAt: new Date().toISOString() };
