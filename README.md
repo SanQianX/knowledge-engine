@@ -57,6 +57,7 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 | GET | `/api/runs/:id` | 运行详情（含 staging manifest） |
 | POST | `/api/runs/:id/retry` | 只恢复失败阶段；索引失败不重新分析 |
 | POST | `/api/search` | `{ projectId 或 repoPath, query, limit, scope }` → 带项目、文件、commit 的结果 |
+| POST | `/api/context` | `{ repoPath 或 projectId, query, client, sessionId, turnId, requestId, scope? }` → 开发前知识事实、适用的已确认记忆、引用与有界 prompt；只读 |
 | POST | `/api/ask` | `{ projectId, query }` → 确定性答案 + 引用（非 LLM 生成） |
 | GET / POST | `/api/get`、`/api/history` | 当前知识文件 / 变更历史，保留 CLI/MCP 输出字段 |
 | GET | `/api/snapshot`、`/api/progress` | 持久化快照 / 快照先行的 SSE 更新 |
@@ -71,6 +72,8 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 鉴权接口只接受无浏览器 Origin 的本机服务调用，使用 `KB_ENGINE_RUNTIME_TOKEN` 的 Bearer token。外壳不能把这些接口或解析后的凭据转发到浏览器。登记投影只接受白名单元数据，API key 不写入 EngineStore、任务记录或日志。
 
 ## 真实运行与恢复边界
+
+开发前 `/api/context` 复用正式检索与记忆适用范围校验，不运行分析模型、不写知识树。默认查询当前项目与所属领域，无领域时只查项目；项目、领域和全局的适用已确认记忆使用独立预算，即使需求没有偏好关键词也准备。完整注入最多 8,000 字符，记忆条目最多 3,000 字符；完整条目截断计数随结果返回。候选、忽略、失效及未同步投影不进入上下文，向量故障明确标为 `file-fallback`。输入的凭据样式在向量查询前脱敏，不记录原需求或知识正文。读取日志的 `knowledge.context.prepared` 只证明准备完成，不能冒充模型送达证据。
 
 - journal 游标按来源隔离；证据投影及可恢复任务先落盘，再 ACK。不等待模型才能消费下一条事件。
 - 会话来源接受 bridge 的四客户端契约（Claude Code、Codex、OpenCode、ZCode）。单个 journal 的非法证据不被跳过或 ACK，但不阻塞其他项目；失败位置和错误码写入日志，健康接口提供 `journal.failures`，重复轮询不刷屏，恢复后续接原游标。

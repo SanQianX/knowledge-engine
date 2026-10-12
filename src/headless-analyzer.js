@@ -18,6 +18,7 @@ class HeadlessAnalyzer {
     const targetContract = freezeKnowledgeTargets(input).contract;
     await new Promise((resolve, reject) => {
       const env = { ...process.env };
+      env.KB_KNOWLEDGE_CONTEXT = '0';
       delete env.CLAUDECODE;
       const child = fork(this.workerPath, [], { cwd: input.stagingPath, env, execArgv: [], detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
       let requested = false, outcome, escalation, termination = Promise.resolve();

@@ -57,6 +57,7 @@ class EngineCoordinator extends EventEmitter {
     };
     const registryStore = { listIds: () => store.listProjects().map(p => p.projectId), readDisplaySnapshot: id => store.getProject(id) };
     this.retrieval = new EngineRetrieval({ layout: this.layout, projectStore: this.projectStore, registryStore, store, memories: this.memories, vectorUrl: this.vectorUrl });
+    this.context = new (require('./context').EngineContext)({ retrieval: this.retrieval, memories: this.memories, logger: this.diagnostics, sanitize: this.safeMessage });
     this.conversations = new ConversationStore({ layout: this.layout, projectStore: this.projectStore });
     this.analyzer = options.analyzer || new HeadlessAnalyzer({ resolveProfile: id => this.profiles.get(id) || this.profiles.get('default'), timeoutMs: options.timeoutMs });
     this.promotion = new KnowledgePromotionService({ layout: this.layout, logger: this.diagnostics, projectStore: this.projectStore, analyzer: { sourceReadMode: this.analyzer.sourceReadMode, runClaim: async input => {

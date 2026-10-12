@@ -132,6 +132,7 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
     return { run: coordinator.enqueue({ projectId: body.projectId, commitSha: body.commitSha, trigger: 'manual-debug', debugFailure: ctx.debug && body.simulateFailure === true }) };
   }
   if (method === 'POST' && ['/api/search', '/api/ask', '/api/get', '/api/history'].includes(pathname)) return coordinator.retrieval[pathname.slice(5)](body);
+  if (method === 'POST' && pathname === '/api/context') return coordinator.context.prepare(body);
   if (method === 'GET' && ['/api/get', '/api/history'].includes(pathname)) return coordinator.retrieval[pathname.slice(5)](Object.fromEntries(search));
   if (method === 'GET' && pathname === '/api/events') return { events: store.listEvents(search.get('limit')).filter(e => !search.get('projectId') || e.projectId === search.get('projectId')) };
   if (method === 'POST' && pathname === '/api/events' && ctx.debug) return { event: store.addEvent(body) };
