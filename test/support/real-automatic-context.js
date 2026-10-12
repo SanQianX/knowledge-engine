@@ -6,6 +6,9 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { spawn } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
+const http = require('node:http');
+const https = require('node:https');
 const AtomicFile = require('../../src/runtime/atomic-file');
 
 async function main() {
@@ -37,11 +40,41 @@ async function main() {
   const { IntegrationManager } = require(path.join(core, '_site/lib/integration-installer'));
   await new IntegrationManager({ rootDir: core, homeDir: config, env: {}, claudeSettingsFile: settingsFile, bridgeHomeDir: path.join(environment.root, 'events') }).installCaptureClaude();
   const filename = path.join(project.workspacePath, `export-${sessionId}.cjs`);
+  // Retain prior failed probes as evidence outside the code tree; otherwise
+  // the model can copy an earlier probe's deliberately different contract.
+  const priorDirectory = path.join(config, 'prior-probe-files');
+  for (const entry of fs.readdirSync(project.workspacePath).filter(name => /^export-[a-f0-9-]{36}\.cjs$/.test(name))) {
+    const source = path.resolve(project.workspacePath, entry), target = path.resolve(priorDirectory, entry);
+    assert.ok(source.startsWith(path.resolve(environment.root) + path.sep) && target.startsWith(path.resolve(environment.root) + path.sep));
+    assert.equal(execFileSync('git', ['ls-files', '--', entry], { cwd: project.workspacePath, encoding: 'utf8', windowsHide: true }).trim(), '');
+    assert.ok(fs.lstatSync(source).isFile()); fs.mkdirSync(priorDirectory, { recursive: true }); fs.renameSync(source, target);
+  }
   const prompt = `需求已确定，无需追问。请在当前项目实现一个 CommonJS 模块，只新增绝对路径 ${JSON.stringify(filename)}。模块导出函数 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；参数不是数组时抛出 Error。遵循当前项目已有的接口约定。不要提交，不要修改其它文件。完成后简短说明。`;
   assert.ok(!/knowledge|知识库|MCP|检索|memoryLabel|AUTOCTX/i.test(prompt.replace(JSON.stringify(filename), '[destination]')));
   const debug = path.join(config, 'native-debug.log');
+  // Observe delivery on the first real model request; a debug marker may also
+  // appear later in generated code and is not sufficient delivery evidence.
+  const modelRequests = [];
+  const proxy = http.createServer((req, res) => {
+    let body = Buffer.alloc(0);
+    req.on('data', chunk => { if (body.length + chunk.length > 16 * 1024 * 1024) { req.destroy(); return; } body = Buffer.concat([body, chunk]); });
+    req.on('end', () => {
+      if (req.method === 'POST' && /\/v1\/messages(?:\?|$)/.test(req.url)) {
+        let parsed = {}; try { parsed = JSON.parse(body); } catch {}
+        const texts = []; const walk = value => { if (typeof value === 'string') texts.push(value); else if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') Object.values(value).forEach(walk); }; walk(parsed.messages);
+        const system = typeof parsed.system === 'string' ? parsed.system : (parsed.system || []).map(p => p.text || '').join('\n');
+        const isTitleRequest = !parsed.tools?.length && system.includes('Generate a concise, sentence-case title (3-7 words)');
+        modelRequests.push({ number: modelRequests.length + 1, isTitleRequest, containsMemory: texts.some(text => text.includes(marker)) || JSON.stringify(parsed.system || '').includes(marker), containsTask: texts.some(text => text.includes(prompt)), model: parsed.model, maxTokens: parsed.max_tokens, toolCount: parsed.tools?.length || 0, roleSequence: parsed.messages?.map(m => m.role), systemPrefix: system.slice(0, 350), textPrefixes: texts.slice(0, 3).map(text => text.slice(0, 60)), bodyHash: crypto.createHash('sha256').update(body).digest('hex'), receivedAt: new Date().toISOString() });
+      }
+      const target = new URL(profile.baseUrl.replace(/\/$/, '') + req.url);
+      const headers = { ...req.headers, host: target.host }; delete headers.connection;
+      const upstream = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers }, response => { res.writeHead(response.statusCode, response.headers); response.pipe(res); });
+      upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); }); res.on('close', () => upstream.destroy()); upstream.end(body);
+    });
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
   const args = ['--plugin-dir', pluginDirectory, '--settings', settingsFile, '--print', prompt, '--output-format', 'stream-json', '--verbose', '--session-id', sessionId, '--permission-mode', 'acceptEdits', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--debug-file', debug, '--model', profile.models.default];
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: config, KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ANTHROPIC_AUTH_TOKEN: profile.apiKey, ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: profile.baseUrl, NODE_PATH: '' };
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: config, KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ANTHROPIC_AUTH_TOKEN: profile.apiKey, ANTHROPIC_API_KEY: '', ANTHROPIC_BASE_URL: `http://127.0.0.1:${proxy.address().port}`, NODE_PATH: '' };
   delete env.CLAUDECODE; delete env.KB_KNOWLEDGE_CONTEXT;
   const child = spawn(/\.[cm]?js$/i.test(cli) ? process.execPath : cli, /\.[cm]?js$/i.test(cli) ? [cli, ...args] : args, { cwd: project.workspacePath, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = ''; child.stdout.on('data', b => { stdout = (stdout + b).slice(-8 * 1024 * 1024); }); child.stderr.on('data', b => { stderr = (stderr + b).slice(-12000); });
@@ -49,13 +82,17 @@ async function main() {
   try {
     const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
     const events = stdout.split(/\r?\n/).filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-    report.native = { code, sessionId, cliVersion: doctor.agents['claude-code'].versionProbe.version, prompt, events, stderr, configuration: 'isolated native control; npm/source plugin loaded explicitly, not Workbench' }; save();
+    report.native = { code, sessionId, cliVersion: doctor.agents['claude-code'].versionProbe.version, prompt, events, stderr, modelRequests, configuration: 'isolated native control; npm/source plugin loaded explicitly, not Workbench' }; save();
     assert.equal(code, 0); assert.ok(events.some(e => e.type === 'result' && !e.is_error));
+    const firstDevelopment = modelRequests.find(request => request.containsTask && !request.isTitleRequest);
+    assert.equal(firstDevelopment?.containsMemory, true, 'confirmed memory must arrive on the first development model request; only the explicitly identified native title generator is auxiliary');
+    assert.ok(modelRequests.slice(0, modelRequests.indexOf(firstDevelopment)).every(request => request.isTitleRequest), 'never silently discard an unknown earlier model request');
     assert.ok(fs.existsSync(filename), 'native client must actually implement the plain task');
     const text = fs.readFileSync(filename, 'utf8'), module = { exports: {} };
     vm.runInNewContext(text, { module, exports: module.exports }, { timeout: 1000 });
     assert.equal(typeof module.exports.exportRecords, 'function');
     const result = JSON.parse(module.exports.exportRecords([{ id: 1 }])); assert.equal(result.memoryLabel, marker); assert.deepEqual(JSON.parse(JSON.stringify(result.records)), [{ id: 1 }]);
+    assert.throws(() => module.exports.exportRecords('invalid'), error => /[\u4e00-\u9fff]/.test(error.message), 'confirmed Chinese-error preference must affect actual behavior');
     const sessionHash = crypto.createHash('sha256').update(sessionId).digest('hex');
     const logs = (await api('/api/logs?pageSize=500&event=knowledge.context.prepared')).entries.filter(e => e.projectId === project.projectId && e.context?.sessionHash === sessionHash);
     assert.equal(logs.length, 1, 'one native pre-prompt context request, no duplicate retrieval'); assert.ok(logs[0].context.memoryCount > 0 && logs[0].context.factCount > 0); assert.equal(logs[0].context.status, 'ready');
@@ -67,6 +104,6 @@ async function main() {
     report.cases.push({ name: 'project-exclusive edited preference does not enter another project', passed: true, projectId: projectB.projectId });
     report.passed = true; report.finishedAt = new Date().toISOString(); save(); console.log('REAL_AUTOMATIC_CONTEXT_PASSED ' + output);
   } catch (error) { report.failure = String(error.message).slice(0, 1600); save(); throw error; }
-  finally { clearTimeout(timer); if (fs.existsSync(debug)) AtomicFile.writeFileAtomic(debug, redactValue(fs.readFileSync(debug, 'utf8'), { secrets: [profile.apiKey] })); }
+  finally { clearTimeout(timer); proxy.closeAllConnections(); await new Promise(resolve => proxy.close(resolve)); if (fs.existsSync(debug)) AtomicFile.writeFileAtomic(debug, redactValue(fs.readFileSync(debug, 'utf8'), { secrets: [profile.apiKey] })); }
 }
 main().catch(error => { console.error(error.code || 'REAL_AUTOMATIC_CONTEXT_FAILED', error.message); process.exitCode = 1; });
