@@ -45,9 +45,12 @@ async function main() {
   const report = { passed: false, installationFile, version: installation.version, integrity: installation.distIntegrity, marketplaceSource, pluginBytesVerifiedAgainstNpm: false, backup, priorVersion: prior?.version || null, unrelatedConfigBefore: digest(unrelatedConfig(beforeConfig)), at: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, report); save();
   try {
-    if (prior) manager.execute('codex', ['plugin', 'remove', owned]);
+    const retainReviewedPlugin = process.argv.includes('--tracking-main') && prior?.version === installation.version && manager.codexContextFilesMatch(prior);
+    if (prior && !retainReviewedPlugin) manager.execute('codex', ['plugin', 'remove', owned]);
     if (manager.codexMarketplaceExists()) manager.execute('codex', ['plugin', 'marketplace', 'remove', 'project-knowledge']);
     manager.installCodex();
+    manager.verifyCodexInstallation();
+    report.retainedInstalledPlugin = retainReviewedPlugin;
     report.pluginBytesVerifiedAgainstNpm = true;
     const after = list();
     assert.deepEqual(others(after), others(before), 'all unrelated plugins retain source, version and enabled state');

@@ -21,7 +21,7 @@ async function main() {
   if (report.failure) { report.priorFailures = [...(report.priorFailures || []), report.failure]; delete report.failure; }
   const save = () => AtomicFile.writeJsonAtomic(reportFile, report);
   const call = async (route, body) => {
-    const response = await fetch(new URL(route, environment.url), { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const response = await fetch(new URL(route, environment.url), { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', Connection: 'close' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) });
     const data = await response.json();
     if (!response.ok || data.ok === false) throw Object.assign(new Error('Acceptance endpoint failed'), { code: data.error?.code || `HTTP_${response.status}` });
     return data;
@@ -82,7 +82,16 @@ async function main() {
     if (first.state === 'failed') { const run = (await call('/api/engine/runs')).runs.find(run => run.commitSha === first.commitSha); await call(`/api/engine/runs/${run.runId}/retry`, {}); }
     await verify(first);
     process.stdout.write('REAL_SINGLE_COMMIT_PASSED\n');
-    const pair = await Promise.all([commit(report.projects[0], round ? `concurrent-a-${round}.txt` : 'concurrent-a.txt', 'Project A owns its own code and knowledge directories.\n'), commit(report.projects[1], round ? `concurrent-b-${round}.txt` : 'concurrent-b.txt', 'Project B owns its own code and knowledge directories.\n')]);
+    const pairAt = process.argv.indexOf('--verify-existing-pair');
+    const pair = pairAt < 0 ? await Promise.all([commit(report.projects[0], round ? `concurrent-a-${round}.txt` : 'concurrent-a.txt', 'Project A owns its own code and knowledge directories.\n'), commit(report.projects[1], round ? `concurrent-b-${round}.txt` : 'concurrent-b.txt', 'Project B owns its own code and knowledge directories.\n')]) : report.projects.map((project, index) => {
+      const commitSha = process.argv[pairAt + index + 1];
+      assert.match(commitSha || '', /^[a-f0-9]{40}$/);
+      assert.equal(git(project.repoPath, ['rev-parse', commitSha + '^{commit}']), commitSha);
+      const expectedFile = round ? `concurrent-${index ? 'b' : 'a'}-${round}.txt` : `concurrent-${index ? 'b' : 'a'}.txt`;
+      assert.equal(git(project.repoPath, ['diff-tree', '--no-commit-id', '--name-only', '-r', commitSha]), expectedFile, 'reverification only accepts the original controlled concurrent commits');
+      return { projectId: project.projectId, commitSha };
+    });
+    report.concurrentCommits = pair; save();
     await Promise.all(pair.map(verify));
     const state = JSON.parse(fs.readFileSync(path.join(root, 'engine', 'engine-state.json')));
     const intervals = pair.map(commit => {
@@ -93,6 +102,6 @@ async function main() {
     assert.ok(Math.max(...intervals.map(i => Date.parse(i.start))) < Math.min(...intervals.map(i => Date.parse(i.finish))), 'real model analysis intervals must overlap');
     report.concurrency = { passed: true, intervals }; report.finishedAt = new Date().toISOString(); save();
     process.stdout.write(`REAL_COMMIT_ACCEPTANCE_PASSED ${reportFile}\n`);
-  } catch (error) { report.failure = { code: error.code || 'ASSERTION_FAILED' }; save(); throw error; }
+  } catch (error) { report.failure = { code: error.code || 'ASSERTION_FAILED', name: error.name, message: String(error.message).slice(0, 500), cause: error.cause?.code || null }; save(); throw error; }
 }
-main().catch(error => { process.stderr.write(`${error.code || 'ACCEPTANCE_FAILED'}\n`); process.exitCode = 1; });
+main().catch(error => { process.stderr.write(`${error.code || 'ACCEPTANCE_FAILED'}: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}\n`); process.exitCode = 1; });

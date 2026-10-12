@@ -67,6 +67,17 @@ async function main() {
     report.hooks = hooks.map(h => ({ command: h.command, sourcePath: h.sourcePath, currentHash: h.currentHash, enabled: h.enabled, trustStatus: h.trustStatus })); save();
     assert.equal(hooks.length, 1); assert.equal(hooks[0].enabled, true); assert.equal(hooks[0].trustStatus, 'trusted', 'review the exact native hook in /hooks before running this acceptance');
     const created = await bridge.request('thread/start', { cwd: project.workspacePath, model: resolveOpenAIModel(profile), sandbox: 'read-only', approvalPolicy: 'on-request' }); threadId = created.thread.id; report.threadId = threadId;
+    const mcpDeadline = Date.now() + 60000;
+    let knowledgeMcp;
+    while (Date.now() < mcpDeadline) {
+      const status = await bridge.request('mcpServerStatus/list', { threadId });
+      knowledgeMcp = status.data?.find(server => server.name === 'project-knowledge');
+      if (knowledgeMcp?.tools?.project_knowledge_resolve) break;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    report.knowledgeMcp = knowledgeMcp; save();
+    assert.equal(knowledgeMcp?.serverInfo?.version, report.version, 'the actual native plugin MCP must initialize the matching npm package');
+    assert.ok(knowledgeMcp.tools.project_knowledge_resolve && knowledgeMcp.tools.project_knowledge_search, 'a trusted hook alone does not prove MCP availability');
     const started = await bridge.request('turn/start', { threadId, input: [{ type: 'text', text: prompt }], model: resolveOpenAIModel(profile) }); turnId = started.turn.id;
     const deadline = Date.now() + 240000;
     while (Date.now() < deadline && !events.some(e => e.method === 'turn/completed' && e.params?.turn?.id === turnId)) await new Promise(resolve => setTimeout(resolve, 500));

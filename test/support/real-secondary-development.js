@@ -35,9 +35,15 @@ async function main() {
     assert.ok(response.ok, route); return response.json();
   };
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true, stdio: 'pipe' }).trim();
+  const initialStatus = git(['status', '--porcelain']);
+  const retainedProbes = process.argv.includes('--retain-probes') && initialStatus ? initialStatus.split('\n').map(line => {
+    assert.match(line, /^\?\? export(?:-zcode)?-[a-f0-9-]{36}\.cjs$/, 'only prior owned native probes may remain untracked');
+    const file = line.slice(3);
+    return { file, hash: crypto.createHash('sha256').update(fs.readFileSync(path.join(root, file))).digest('hex') };
+  }) : [];
   let sessionId;
   try {
-    if (!priorTask) assert.equal(git(['status', '--porcelain']), '', 'secondary development requires a clean controlled repository');
+    if (!priorTask && !retainedProbes.length) assert.equal(initialStatus, '', 'secondary development requires a clean controlled repository');
     const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
     const prior = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.state === 'succeeded' && (!priorTask || r.commitSha === priorTask.sourceCommit));
     assert.ok(prior?.commitSha);
@@ -90,7 +96,9 @@ async function main() {
     const evidenceAt = tools.findIndex(e => e.type === 'claude/tool-result' && JSON.stringify(e).includes('hybrid+markdown-truth') && JSON.stringify(e).includes(prior.commitSha));
     const writeAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes(files[0]) && !JSON.stringify(e).includes('project-knowledge-kb.js'));
     assert.ok(readAt >= 0 && evidenceAt > readAt && writeAt > evidenceAt, 'actual retrieval must precede code changes');
-    assert.deepEqual(git(['status', '--porcelain']).split('\n').map(line => line.slice(3)).sort(), files.slice().sort());
+    assert.deepEqual(git(['status', '--porcelain']).split('\n').map(line => line.slice(3)).sort(), [...files, ...retainedProbes.map(p => p.file)].sort());
+    for (const probe of retainedProbes) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, probe.file))).digest('hex'), probe.hash, 'prior failed probes must remain byte-identical');
+    proof.retainedPriorProbes = retainedProbes;
     const policy = require(path.join(root, files[0]));
     assert.equal(policy.isKnowledgeWriter('engine-promotion'), true); assert.equal(policy.isKnowledgeWriter('shell'), false); assert.equal(policy.isKnowledgeWriter(null), false);
     const source = fs.readFileSync(path.join(root, files[0]), 'utf8');
