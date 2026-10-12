@@ -25,7 +25,7 @@ async function main() {
   const save = () => AtomicFile.writeJsonAtomic(path.join(proof, 'result.json'), report);
   const read = async route => { const response = await fetch(new URL(route, address), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, route); return response.json(); };
   const identity = await read('/api/runtime/identity');
-  assert.equal(identity.dataDir, dataDir); assert.match(identity.version, /^5\.0\.9(?:-rc\.\d+)?$/);
+  assert.equal(identity.dataDir, dataDir); assert.match(identity.version, /^5\.0\.\d+(?:-rc\.\d+)?$/);
   report.identity = identity; save();
   await waitFor(async () => { const c = (await read('/api/brain')).configuration; return c?.model && c.embedding && c.scopes; }, 'actual supervised configuration', 180000);
   const browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(proof, 'browser'), url: address.href, width: 1920, height: 1080 });

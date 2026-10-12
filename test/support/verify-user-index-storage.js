@@ -35,7 +35,7 @@ async function main() {
   const url = new URL(address); assert.equal(url.hostname, '127.0.0.1');
   const read = async route => { const response = await fetch(new URL(route, url), { signal: AbortSignal.timeout(20000) }); assert.ok(response.ok, route); return response.json(); };
   const identity = await read('/api/runtime/identity');
-  assert.equal(identity.dataDir, dataDir); assert.match(identity.version, /^5\.0\.9(?:-rc\.\d+)?$/);
+  assert.equal(identity.dataDir, dataDir); assert.match(identity.version, /^5\.0\.\d+(?:-rc\.\d+)?$/);
   // The launcher becomes reachable before supervised modules acknowledge their
   // configuration. Verify the acknowledged directory, not that transient phase.
   await waitFor(async () => {

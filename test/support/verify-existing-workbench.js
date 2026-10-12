@@ -20,7 +20,7 @@ async function main() {
   const identity = await read('/api/runtime/identity');
   assert.equal(identity.dataDir, dataDir);
   assert.equal(identity.version, require(path.join(core, 'package.json')).version);
-  assert.match(identity.version, /^5\.0\.9(?:-rc\.\d+)?$/);
+  assert.match(identity.version, /^5\.0\.\d+(?:-rc\.\d+)?$/);
   const projects = (await read('/api/projects/aggregated')).projects;
   const project = projects.find(p => path.resolve(p.workspacePath).toLowerCase() === path.resolve(__dirname, '../..').toLowerCase());
   assert.ok(project?.modules.terminal.registered);

@@ -8,9 +8,10 @@ const { createEngineServer } = require('../src/server');
 
 test('real HTTP memory review atomically edits and confirms, snapshots expose ranges, invalid target/provenance do not save', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-memory-http-'));
+  let releaseIndex;
   const engine = createEngineServer({ dataDir: root, runtimeToken: 'test-private-token' }); await engine.ready;
   await new Promise(resolve => engine.server.listen(0, '127.0.0.1', resolve));
-  t.after(async () => { await engine.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  t.after(async () => { releaseIndex?.(); await engine.close(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const address = 'http://127.0.0.1:' + engine.server.address().port;
   const request = async (route, body, method = 'POST') => { const r = await fetch(address + route, { method: body ? method : 'GET', headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) }); return { status: r.status, json: await r.json() }; };
   const p = engine.store.addProject({ projectId: 'project-source', repoPath: path.join(root, 'code'), knowledgePath: path.join(root, 'knowledge') }).project;
@@ -22,8 +23,13 @@ test('real HTTP memory review atomically edits and confirms, snapshots expose ra
   assert.equal((await request('/api/memories/' + id, { text: '不能保存', scopeType: 'domain', scopeId: 'missing-domain', status: 'confirmed' }, 'PATCH')).status, 400);
   assert.equal(engine.store.state.memories[0].status, 'candidate'); assert.equal(engine.store.state.memories[0].text, '原始总结');
   assert.equal((await request('/api/memories/' + id, { evidence: { projectId: 'fake' } }, 'PATCH')).status, 400);
+  await engine.coordinator.sharedIndexQueue;
+  engine.store.state.sharedScopes[0].index = { status: 'ready', fingerprint: 'previous-index' };
+  engine.store.save();
+  engine.coordinator.sharedIndexQueue = new Promise(resolve => { releaseIndex = resolve; });
   const saved = await request('/api/memories/' + id, { text: '审核后的长期偏好', scopeType: 'global', scopeId: 'brain-default', status: 'confirmed' }, 'PATCH');
   assert.equal(saved.status, 200); assert.equal(saved.json.memory.syncStatus, 'ready');
+  assert.equal(saved.json.memory.indexStatus, 'pending', 'a queued new memory index is not the previous ready index');
   assert.equal(saved.json.memory.originalText, '原始总结'); assert.deepEqual(saved.json.memory.evidence, evidence);
   const snapshot = (await request('/api/snapshot')).json;
   assert.equal(snapshot.memories[0].scopeType, 'global'); assert.equal(snapshot.memories[0].text, '审核后的长期偏好');

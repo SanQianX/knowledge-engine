@@ -14,6 +14,7 @@ class MemoryService {
   constructor(store, options = {}) {
     this.store = store; this.layout = new RuntimeLayout(store.dataDir); this.onMaterialized = options.onMaterialized;
     this.syncErrors = new Map(); this.closed = false; this.onSyncChange = options.onSyncChange; this.writes = new Set();
+    this.getIndexStatus = options.getIndexStatus;
   }
   lock() { return this.layout.getRuntimePath('locks', 'memories.lock'); }
   scopeOf(memory) { return { type: memory.scopeType || 'global', id: memory.scopeId || memory.brainId || 'brain-default' }; }
@@ -65,7 +66,7 @@ class MemoryService {
     const scope = this.scopeOf(memory), target = this.target(memory), brain = this.brainScope(memory.brainId || 'brain-default');
     return { ...memory, scopeType: scope.type, scopeId: scope.id, targetName: target.name, targetAvailable: target.available,
       syncStatus: memory.status !== 'confirmed' ? 'not-required' : brain && !this.syncErrors.has(brain.id) && this.validFile(brain, this.entry(memory)) ? 'ready' : 'pending',
-      indexStatus: memory.status === 'confirmed' ? brain?.index?.status || 'pending' : 'not-required',
+      indexStatus: memory.status === 'confirmed' ? this.getIndexStatus?.(brain) || (brain?.index?.error ? 'failed' : brain?.index?.status || 'pending') : 'not-required',
       ...(brain && this.syncErrors.has(brain.id) ? { syncError: this.syncErrors.get(brain.id) } : {}) };
   }
   async configure(scopes) {

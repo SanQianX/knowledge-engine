@@ -40,6 +40,7 @@ class EngineCoordinator extends EventEmitter {
     this.sharedIndexDirty = new Set();
     this.sharedIndexQueue = Promise.resolve();
     this.memories = new MemoryService(store, {
+      getIndexStatus: scope => scope && this.sharedIndexJobs.has(scope.id) ? 'pending' : null,
       onMaterialized: scope => { this.indexSharedScope(scope).catch(() => {}); },
       onSyncChange: (scope, code) => {
         this.emit('progress', store.addEvent({ type: 'memory.sync', scopeId: scope.id, summary: code ? `记忆文件待恢复（${code}）` : '记忆文件已恢复同步' }));
