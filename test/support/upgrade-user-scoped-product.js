@@ -33,7 +33,10 @@ async function main() {
   try {
     save(); const identity = await read('/api/runtime/identity'); assert.equal(identity.dataDir, dataDir); assert.equal(identity.version, JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version);
     assert.ok((await read('/api/engine/runs')).runs.every(r => r.state === 'succeeded'), 'do not interrupt active maintenance');
-    assert.ok((await read('/api/terminal/sessions')).sessions.every(s => !['running', 'starting', 'waiting-permission'].includes(s.state)), 'do not interrupt an active user workbench task');
+    for (const project of (await read('/api/projects/aggregated')).projects.filter(p => p.modules.terminal.registered)) {
+      const sessions = await read('/api/terminal/sessions?contextId=' + encodeURIComponent(project.modules.terminal.projectId));
+      assert.ok(sessions.sessions.every(s => !['running', 'starting', 'waiting-permission'].includes(s.state)), 'do not interrupt an active user workbench task');
+    }
     const before = snapshot(dataDir, core), beforeMemories = memories();
     const indexRoot = (await read('/api/brain')).configuration.indexStorage.actualPath;
     assert.equal(indexRoot, 'D:\\SanQian.Xu\\knowledge\\.indexes'); const beforeIndexes = fingerprint(indexRoot);
