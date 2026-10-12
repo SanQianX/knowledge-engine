@@ -31,7 +31,8 @@ async function main() {
   });
   delete process.env.AI_CODING_EVENT_BRIDGE_MODULE;
   const { startServer } = require(path.join(installation.core, '_site/lib/server-app'));
-  const shell = await startServer({ rootDir: installation.core, dataDir: path.join(root, 'shell'), port: Number(process.env.KB_INSTALLED_ACCEPTANCE_PORT || 5803), host: '127.0.0.1' });
+  const shellPort = process.env.KB_INSTALLED_ACCEPTANCE_PORT === '0' ? await freePort() : Number(process.env.KB_INSTALLED_ACCEPTANCE_PORT || 5803);
+  const shell = await startServer({ rootDir: installation.core, dataDir: path.join(root, 'shell'), port: shellPort, host: '127.0.0.1' });
   ownedShell = shell;
   const url = `http://127.0.0.1:${shell.port}`;
   const read = async route => { const response = await fetch(new URL(route, url)); assert.ok(response.ok, route); return response; };

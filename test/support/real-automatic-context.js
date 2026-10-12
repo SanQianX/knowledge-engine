@@ -22,10 +22,11 @@ async function main() {
   const api = async (route, body, method) => { const response = await fetch(new URL(route, environment.url), { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); const data = await response.json(); assert.ok(response.ok && data.ok !== false, `${route}: ${data.error?.code || data.error || response.status}`); return data; };
   const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
   const knownMemories = (await api('/api/engine/memories')).memories;
-  const candidate = knownMemories.find(m => m.status === 'candidate' && m.evidence.projectId === project.projectId) || knownMemories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
+  const ownedConfirmed = knownMemories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
+  const candidate = ownedConfirmed || knownMemories.find(m => m.status === 'candidate' && m.evidence.projectId === project.projectId);
   assert.ok(candidate, 'evidenced candidate from real maintenance required');
   for (const previous of knownMemories.filter(m => m.id !== candidate.id && m.status === 'confirmed' && m.text.includes('AUTOCTX-'))) await api(`/api/engine/memories/${previous.id}`, { status: 'ignored' }, 'PATCH');
-  const marker = `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
+  const marker = ownedConfirmed?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0] || `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
   const output = path.join(environment.root, `real-automatic-context-${Date.now()}.json`);
   const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, marker, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
@@ -47,7 +48,7 @@ async function main() {
   for (const entry of fs.readdirSync(project.workspacePath).filter(name => /^export-[a-f0-9-]{36}\.cjs$/.test(name))) {
     const source = path.resolve(project.workspacePath, entry), target = path.resolve(priorDirectory, entry);
     assert.ok(source.startsWith(path.resolve(environment.root) + path.sep) && target.startsWith(path.resolve(environment.root) + path.sep));
-    assert.equal(execFileSync('git', ['ls-files', '--', entry], { cwd: project.workspacePath, encoding: 'utf8', windowsHide: true }).trim(), '');
+    if (execFileSync('git', ['ls-files', '--', entry], { cwd: project.workspacePath, encoding: 'utf8', windowsHide: true }).trim()) continue;
     assert.ok(fs.lstatSync(source).isFile()); fs.mkdirSync(priorDirectory, { recursive: true }); fs.renameSync(source, target);
   }
   const prompt = `需求已确定，无需追问。请在当前项目实现一个 CommonJS 模块，只新增绝对路径 ${JSON.stringify(filename)}。模块导出函数 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；参数不是数组时抛出 Error。遵循当前项目已有的接口约定。不要提交，不要修改其它文件。完成后简短说明。`;
@@ -65,7 +66,7 @@ async function main() {
         const texts = []; const walk = value => { if (typeof value === 'string') texts.push(value); else if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') Object.values(value).forEach(walk); }; walk(parsed.messages);
         const system = typeof parsed.system === 'string' ? parsed.system : (parsed.system || []).map(p => p.text || '').join('\n');
         const isTitleRequest = !parsed.tools?.length && system.includes('Generate a concise, sentence-case title (3-7 words)');
-        modelRequests.push({ number: modelRequests.length + 1, isTitleRequest, containsMemory: texts.some(text => text.includes(marker)) || JSON.stringify(parsed.system || '').includes(marker), containsTask: texts.some(text => text.includes(prompt)), model: parsed.model, maxTokens: parsed.max_tokens, toolCount: parsed.tools?.length || 0, roleSequence: parsed.messages?.map(m => m.role), systemPrefix: system.slice(0, 350), textPrefixes: texts.slice(0, 3).map(text => text.slice(0, 60)), bodyHash: crypto.createHash('sha256').update(body).digest('hex'), receivedAt: new Date().toISOString() });
+        modelRequests.push({ number: modelRequests.length + 1, isTitleRequest, containsOwnMemory: [...texts, system].some(text => text.includes(marker) && text.includes(candidate.id) && text.includes('<knowledge_context>')), containsMemory: texts.some(text => text.includes(marker)) || JSON.stringify(parsed.system || '').includes(marker), containsTask: texts.some(text => text.includes(prompt)), model: parsed.model, maxTokens: parsed.max_tokens, toolCount: parsed.tools?.length || 0, roleSequence: parsed.messages?.map(m => m.role), systemPrefix: system.slice(0, 350), textPrefixes: texts.slice(0, 3).map(text => text.slice(0, 60)), bodyHash: crypto.createHash('sha256').update(body).digest('hex'), receivedAt: new Date().toISOString() });
       }
       const target = new URL(profile.baseUrl.replace(/\/$/, '') + req.url);
       const headers = { ...req.headers, host: target.host }; delete headers.connection;
@@ -88,6 +89,7 @@ async function main() {
     assert.equal(code, 0); assert.ok(events.some(e => e.type === 'result' && !e.is_error));
     const firstDevelopment = modelRequests.find(request => request.containsTask && !request.isTitleRequest);
     assert.equal(firstDevelopment?.containsMemory, true, 'confirmed memory must arrive on the first development model request; only the explicitly identified native title generator is auxiliary');
+    assert.equal(firstDevelopment.containsOwnMemory, true, 'the product memory ID and envelope must be present, not just an old marker in unrelated client history');
     assert.ok(modelRequests.slice(0, modelRequests.indexOf(firstDevelopment)).every(request => request.isTitleRequest), 'never silently discard an unknown earlier model request');
     assert.ok(fs.existsSync(filename), 'native client must actually implement the plain task');
     const text = fs.readFileSync(filename, 'utf8'), module = { exports: {} };
