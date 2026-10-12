@@ -22,7 +22,8 @@ async function main() {
   const { session } = await api('/api/terminal/sessions', { context: { contextId: project.modules.terminal.projectId, workspaceRef: project.modules.terminal.projectId }, agentId: 'claude-code', aiProfileId: 'acceptance-model', permissionMode: 'bypassPermissions' });
   proof.sessionId = session.sessionId; save();
   const preferences = '这是受控测试项目的所有者明确提出的两条长期偏好（不是从代码风格推断）：一、软件只保留主要功能，避免无必要实体；二、项目知识文档默认用简体中文。今后的任务可以参考这两条偏好，但必须在知识维护提出候选后由我手动确认，未确认时不能注入长期记忆。';
-  const prompt = `${preferences}\n请只新增 ${filename}，原样记录以上文字；不修改其他文件、读取凭据或自行提交。最终回答 MEMORY_PREFERENCE_OK。`;
+  const destination = path.join(repo, filename);
+  const prompt = `这是代码仓库中的文件新增任务，不是让你保存 Claude 原生自动记忆。唯一允许新增的文件是绝对路径 ${JSON.stringify(destination)}。必须把文件写在该代码仓库中，不要写入 .claude/projects/*/memory 或其他目录。\n文件内容必须原样为：\n${preferences}\n请实际使用文件工具写入该绝对路径，再回读核对。不得修改其他文件、读取凭据或自行提交。写入并核对完成后回答 MEMORY_PREFERENCE_OK。`;
   await api(`/api/terminal/sessions/${session.sessionId}/input`, { text: prompt });
   let snapshot;
   const deadline = Date.now() + 240000;
