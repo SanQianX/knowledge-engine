@@ -25,10 +25,12 @@ async function main() {
   const ownedConfirmed = knownMemories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
   const candidate = ownedConfirmed || knownMemories.find(m => m.status === 'candidate' && m.evidence.projectId === project.projectId);
   assert.ok(candidate, 'evidenced candidate from real maintenance required');
-  for (const previous of knownMemories.filter(m => m.id !== candidate.id && m.status === 'confirmed' && m.text.includes('AUTOCTX-'))) await api(`/api/engine/memories/${previous.id}`, { status: 'ignored' }, 'PATCH');
-  const marker = ownedConfirmed?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0] || `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
+  const editMemory = process.argv.includes('--edit-memory');
+  if (!editMemory) for (const previous of knownMemories.filter(m => m.id !== candidate.id && m.status === 'confirmed' && m.text.includes('AUTOCTX-'))) await api(`/api/engine/memories/${previous.id}`, { status: 'ignored' }, 'PATCH');
+  const priorMarker = ownedConfirmed?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0];
+  const marker = !editMemory && priorMarker || `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
   const output = path.join(environment.root, `real-automatic-context-${Date.now()}.json`);
-  const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, marker, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
+  const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, marker, priorMarker, editedPreference: editMemory, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const edited = await api(`/api/engine/memories/${candidate.id}`, { text: `本项目所有 JSON 导出对象都包含 memoryLabel 字段，其值固定为 ${marker}；错误文案使用简体中文。`, scopeType: 'project', scopeId: project.projectId, status: 'confirmed' }, 'PATCH');
   assert.equal(edited.memory.status, 'confirmed');
@@ -45,7 +47,7 @@ async function main() {
   // Retain prior failed probes as evidence outside the code tree; otherwise
   // the model can copy an earlier probe's deliberately different contract.
   const priorDirectory = path.join(config, 'prior-probe-files');
-  for (const entry of fs.readdirSync(project.workspacePath).filter(name => /^export-[a-f0-9-]{36}\.cjs$/.test(name))) {
+  for (const entry of (editMemory ? [] : fs.readdirSync(project.workspacePath).filter(name => /^export-[a-f0-9-]{36}\.cjs$/.test(name)))) {
     const source = path.resolve(project.workspacePath, entry), target = path.resolve(priorDirectory, entry);
     assert.ok(source.startsWith(path.resolve(environment.root) + path.sep) && target.startsWith(path.resolve(environment.root) + path.sep));
     if (execFileSync('git', ['ls-files', '--', entry], { cwd: project.workspacePath, encoding: 'utf8', windowsHide: true }).trim()) continue;
@@ -113,12 +115,14 @@ async function main() {
       let run;
       while (Date.now() < deadline) { run = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.commitSha === commitSha); assert.ok(!['failed', 'index-pending'].includes(run?.state), run?.error?.code); if (run?.state === 'succeeded') break; await new Promise(resolve => setTimeout(resolve, 1500)); }
       assert.equal(run?.state, 'succeeded'); assert.equal(run.indexState, 'succeeded');
-      const next = await api('/api/engine/context', { repoPath: project.workspacePath, query: '维护 JSON 导出模块 exportRecords 的参数校验与返回字段' });
+      const followingQuery = `为 ${path.basename(filename)} 中的 exportRecords 维护参数校验与返回字段`;
+      const next = await api('/api/engine/context', { repoPath: project.workspacePath, query: followingQuery });
+      report.maintenance = { commitSha, runId: run.runId, state: run.state, indexState: run.indexState, followingQuery, references: next.facts.map(r => ({ entryId: r.entryId, commitSha: r.commitSha })) }; save();
       assert.ok(next.facts.some(ref => ref.commitSha === commitSha), 'a following development query must retrieve the actual new commit');
       const conversation = JSON.parse(fs.readFileSync(path.join(environment.root, 'engine/runtime/projects', project.projectId, 'commit-conversations', commitSha + '.json')));
       assert.ok(conversation.turns.some(turn => turn.sessionId === sessionId && turn.userEvents.some(event => event.content === prompt)));
       assert.ok(!conversation.turns.flatMap(turn => turn.userEvents).some(event => event.content.includes(marker)), 'injected memory must not become a forged user instruction');
-      report.cases.push({ name: 'native development commit automatically promotes, indexes and becomes next-task context with original capture', passed: true, commitSha, runId: run.runId, references: next.facts.map(r => ({ entryId: r.entryId, commitSha: r.commitSha })) });
+      report.cases.push({ name: 'native development commit automatically promotes, indexes and becomes next-task context with original capture', passed: true, commitSha, runId: run.runId, followingQuery, references: next.facts.map(r => ({ entryId: r.entryId, commitSha: r.commitSha })) });
     }
     report.passed = true; report.finishedAt = new Date().toISOString(); save(); console.log('REAL_AUTOMATIC_CONTEXT_PASSED ' + output);
   } catch (error) { report.failure = String(error.message).slice(0, 1600); save(); throw error; }

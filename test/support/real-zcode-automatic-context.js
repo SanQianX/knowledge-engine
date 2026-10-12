@@ -34,11 +34,27 @@ async function main() {
     assert.equal(edited.memory.status, 'confirmed');
   }
   const cli = (await api('/api/terminal/system/doctor')).agents.zcode.cli.path;
-  const root = fs.mkdtempSync(path.join(environment.root, 'native-zcode-')), configFile = path.join(root, '.zcode/cli/config.json');
-  const manager = new IntegrationManager({ rootDir: core, homeDir: root, zcodeConfigFile: configFile, bridgeHomeDir: path.join(environment.root, 'events') });
-  await manager.installCaptureZCode(); manager.installZCode();
+  const root = fs.mkdtempSync(path.join(environment.root, 'native-zcode-'));
+  const userConfiguration = process.argv.includes('--user-config'), homeDir = userConfiguration ? os.homedir() : root;
+  const configFile = path.join(homeDir, '.zcode/cli/config.json');
+  const manager = new IntegrationManager({ rootDir: core, homeDir, zcodeConfigFile: configFile, bridgeHomeDir: path.join(environment.root, 'events') });
+  const configFingerprint = value => {
+    const config = JSON.parse(JSON.stringify(value));
+    if (Array.isArray(config.hooks?.events?.UserPromptSubmit)) config.hooks.events.UserPromptSubmit = config.hooks.events.UserPromptSubmit.map(g => ({ ...g, hooks: (g.hooks || []).filter(h => !(h.type === 'process' && h.command === 'node' && h.args?.[1] === '--client' && h.args?.[2] === 'zcode' && /\/node_modules\/(?:@sanqianx\/)?project-knowledge\/plugins\/project-knowledge\/scripts\/context-hook\.cjs$/i.test(String(h.args?.[0]).replace(/\\/g, '/')))) })).filter(g => g.hooks.length);
+    if (!config.hooks?.events?.UserPromptSubmit?.length && config.hooks?.events) delete config.hooks.events.UserPromptSubmit;
+    return crypto.createHash('sha256').update(JSON.stringify(config)).digest('hex');
+  };
+  let backup, preservedConfigHash;
+  if (userConfiguration) {
+    assert.ok(fs.existsSync(configFile), 'existing native user configuration required');
+    backup = path.resolve(__dirname, '../../../.project-knowledge-backups', 'pre-zcode-native-' + Date.now());
+    execFileSync(process.execPath, [path.join(__dirname, 'backup-client-configs.js'), backup], { windowsHide: true, stdio: 'pipe' });
+    preservedConfigHash = configFingerprint(JSON.parse(fs.readFileSync(configFile)));
+    manager.installZCode();
+    assert.equal(configFingerprint(JSON.parse(fs.readFileSync(configFile))), preservedConfigHash, 'model, env, third-party hooks and capture remain unchanged');
+  } else { await manager.installCaptureZCode(); manager.installZCode(); }
   const output = path.join(root, 'result.json'), requests = [], events = [];
-  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: '0.16.9', marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), projectId: project.projectId, startedAt: new Date().toISOString() };
+  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: '0.16.9', marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), configuration: userConfiguration ? 'existing user configuration; native model selection overridden only for this task' : 'isolated control', backup, preservedConfigHash, projectId: project.projectId, startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const filename = path.join(project.workspacePath, 'export-zcode-' + crypto.randomUUID() + '.cjs');
   const prompt = `需求已确定，无需追问。请在当前项目实现 CommonJS 模块，只新增文件 ${JSON.stringify(filename)}。导出 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；非数组时抛出 Error。遵循已有接口约定，不要提交或修改其它文件，完成后简短说明。`;
@@ -60,7 +76,7 @@ async function main() {
   await new Promise((resolve, reject) => { proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve); });
   const baseSpec = runtimeModelForProfile(profile), spec = { ...baseSpec, provider: { ...baseSpec.provider, baseURL: `http://127.0.0.1:${proxy.address().port}` } };
   provider = await createZCodeProfileRuntime(spec);
-  bridge = createAppServerBridge({ command: process.execPath, args: [cli, 'app-server', '--stdio'], env: { ...providerRuntimeEnvironment(cli), USERPROFILE: root, KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: provider.file }, cwd: project.workspacePath, maxRestarts: 0, idleTimeoutMs: 0, requestTimeoutMs: 60000,
+  bridge = createAppServerBridge({ command: process.execPath, args: [cli, 'app-server', '--stdio'], env: { ...providerRuntimeEnvironment(cli), ...(!userConfiguration ? { USERPROFILE: root } : {}), KB_DATA_DIR: path.join(environment.root, 'shell'), AI_CODING_EVENT_BRIDGE_HOME: path.join(environment.root, 'events'), ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: provider.file }, cwd: project.workspacePath, maxRestarts: 0, idleTimeoutMs: 0, requestTimeoutMs: 60000,
     onEvent: event => { if (event.method === 'session/event') events.push(event.params); },
     onServerRequest: (method, params) => {
       if (method === 'session/requestRuntimePreferences') return { nativeSearchEnhancementsEnabled: false, memoryEnabled: false, askUserQuestionAutoResolutionEnabled: false, modelContextBudgetStrategy: 'preflight-v1' };
@@ -93,11 +109,13 @@ async function main() {
       let run; const end = Date.now() + 900000;
       while (Date.now() < end) { run = (await api('/api/engine/runs')).runs.find(r => r.projectId === project.projectId && r.commitSha === commitSha); assert.ok(!['failed', 'index-pending'].includes(run?.state), run?.error?.code); if (run?.state === 'succeeded') break; await new Promise(resolve => setTimeout(resolve, 1500)); }
       assert.equal(run?.state, 'succeeded'); assert.equal(run.indexState, 'succeeded');
-      const next = await api('/api/engine/context', { repoPath: project.workspacePath, query: 'exportRecords 导出 records memoryLabel 参数校验' }); assert.ok(next.facts.some(f => f.commitSha === commitSha));
+      const followingQuery = `维护 ${path.basename(filename)} 的 exportRecords 导出和参数校验`;
+      const next = await api('/api/engine/context', { repoPath: project.workspacePath, query: followingQuery });
+      report.maintenance = { commitSha, runId: run.runId, state: run.state, indexState: run.indexState, followingQuery, references: next.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha, memoryId: r.memoryId })) }; save();
+      assert.ok(next.facts.some(f => f.commitSha === commitSha));
       const frozen = JSON.parse(fs.readFileSync(path.join(environment.root, 'engine/runtime/projects', project.projectId, 'commit-conversations', commitSha + '.json')));
       assert.ok(frozen.turns.some(t => t.sessionId === sessionId && t.userEvents.some(e => e.content === prompt)));
       assert.ok(!frozen.turns.flatMap(t => t.userEvents).some(e => e.content.includes('<knowledge_context>')));
-      report.maintenance = { commitSha, runId: run.runId, state: run.state, indexState: run.indexState, references: next.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha, memoryId: r.memoryId })) };
     }
     report.passed = true; report.finishedAt = new Date().toISOString(); save(); console.log('REAL_ZCODE_AUTOMATIC_CONTEXT_PASSED ' + output);
   } catch (error) { report.failure = error.message; Object.assign(report, { requests, events }); save(); throw error; }

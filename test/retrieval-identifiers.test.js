@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
 
@@ -40,6 +41,32 @@ test('unassigned projects share no implicit domain; explicit domain and brain ra
   assert.deepEqual(await ids('domain'), ['brain-one', 'domain-tools', 'project-a', 'project-b']);
   projects[0].domainId = null;
   assert.deepEqual(await ids('domain'), ['brain-one', 'project-a']);
+});
+
+test('a known source filename resolves its current facts despite many vector-ranked historical examples; unknown files keep semantic fallback', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'source-file-retrieval-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const knowledgePath = path.join(root, 'knowledge'); fs.mkdirSync(knowledgePath);
+  fs.writeFileSync(path.join(knowledgePath, 'old.md'), '# Historical export\n\n' + Array.from({ length: 40 }, (_, i) => `## Example ${i}\n\nJSON export records parameters contract.\n`).join('\n'));
+  fs.writeFileSync(path.join(knowledgePath, 'new.md'), '# New export\n\nChanged `export-latest.cjs`: JSON export records parameters contract.\n');
+  fs.writeFileSync(path.join(knowledgePath, 'similar.md'), '# Similar filename\n\nOnly export-latest.cjs.bak, not the requested source file.\n');
+  const project = { projectId: 'project-files', knowledgePath, enabled: true, brainId: 'brain-default' };
+  const sha = 'c'.repeat(40), run = { projectId: project.projectId, commitSha: sha, promotedAt: '2026-10-12T12:00:00Z', staging: { operations: [{ path: 'new.md' }] } };
+  const store = { state: { sharedScopes: [] }, getProject: id => id === project.projectId ? project : null, listProjects: () => [project], readRuntime: () => ({ index: {} }), listRuns: () => [run] };
+  let unavailable = false;
+  const vector = http.createServer((req, res) => { res.setHeader('Content-Type', 'application/json'); if (unavailable) { res.writeHead(503); res.end('{}'); } else res.end(JSON.stringify({ results: [{ project: project.projectId, uri: path.join(knowledgePath, 'old.md'), score: 100000 }] })); });
+  await new Promise(resolve => vector.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => vector.close(resolve)));
+  const retrieval = new EngineRetrieval({ layout: new RuntimeLayout(root), store, projectStore: { readState: () => ({ index: {} }) }, vectorUrl: `http://127.0.0.1:${vector.address().port}` });
+  for (const query of ['Maintain export-latest.cjs JSON parameters', '维护 `export-latest.cjs` 的接口', '检查 src\\export-latest.cjs']) {
+    const result = await retrieval.search({ projectId: project.projectId, query, limit: 1 });
+    assert.equal(result.results[0]?.entry_id, 'new.md'); assert.equal(result.results[0].commitSha, sha);
+    assert.ok(result.results[0].match_channels.includes('exact-source-file:export-latest.cjs'));
+  }
+  const unknown = await retrieval.search({ projectId: project.projectId, query: 'Implement brand-new.cjs JSON export', limit: 1 });
+  assert.equal(unknown.results[0].entry_id, 'old.md', 'a future filename does not suppress useful semantic background');
+  unavailable = true;
+  const fallback = await retrieval.search({ projectId: project.projectId, query: 'Maintain export-latest.cjs', limit: 1 });
+  assert.equal(fallback.health.index, 'degraded'); assert.equal(fallback.results[0].entry_id, 'new.md');
 });
 
 test('known commit SHA and prefix cannot be crowded out by unrelated vector chunks or stale provenance', async t => {

@@ -4,6 +4,8 @@ const path = require('node:path');
 const { KnowledgeRetrievalService } = require('./runtime/knowledge-retrieval-service');
 const { listMarkdownFiles, isExcludedKnowledgePath } = require('./runtime/markdown-knowledge-indexer');
 const { DomainError } = require('./runtime/contracts');
+const fileNames = query => [...new Set((String(query).match(/[\p{L}\p{N}_./\\-]+\.(?:cjs|mjs|js|jsx|ts|tsx|py|cs|cpp|c|h|hpp|rs|go|html|css|scss|json|ya?ml|toml|md|txt|sh|ps1)\b/giu) || []).map(value => path.posix.basename(value.replace(/\\/g, '/')).toLowerCase()))].slice(0, 20);
+const mentionsFile = (candidate, name) => new RegExp(`(?<![\\p{L}\\p{N}_-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_.-])`, 'iu').test([candidate.entryId, candidate.title, candidate.chunkText, ...(candidate.metadata?.sourcePaths || [])].join('\n'));
 
 class EngineRetrieval extends KnowledgeRetrievalService {
   constructor(options) { super(options); this.store = options.store; this.memories = options.memories; this.vectorUrl = options.vectorUrl || 'http://127.0.0.1:8787'; }
@@ -24,7 +26,10 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       const result = super.score(candidate, signals);
       return { score: Math.max(1, result.score), selectionSignals: [...result.selectionSignals, 'exact-commit'] };
     }
-    return super.score(candidate, signals);
+    if (candidate.knownFileQuery && !candidate.fileReferences.length) return { score: 0, selectionSignals: [] };
+    const result = super.score(candidate, signals);
+    if (candidate.fileReferences?.length) return { score: Math.max(1, result.score), selectionSignals: [...result.selectionSignals, ...candidate.fileReferences.map(name => `exact-source-file:${name}`)] };
+    return result;
   }
   resolve(input = {}) {
     let project = this.store.getProject(input.projectId || input.projectSlug || input.project);
@@ -68,6 +73,10 @@ class EngineRetrieval extends KnowledgeRetrievalService {
   }
   async recallIndex(scopes, query, current, health) {
     if (!query) { health.index = 'unavailable'; return; }
+    // File identifiers, like commit IDs, select current facts before semantic
+    // ranking. A not-yet-known filename still permits analogous background.
+    const named = fileNames(query), known = named.filter(name => [...current.values()].some(candidate => mentionsFile(candidate, name)));
+    for (const candidate of current.values()) { candidate.knownFileQuery = known.length > 0; candidate.fileReferences = known.filter(name => mentionsFile(candidate, name)); }
     const mappings = scopes.map(s => ({ scope: s, registration: this.store.getProject(s.projectId) || (() => { const shared = this.store.state.sharedScopes.find(p => p.id === s.projectId); return shared ? { vectorProjectId: `scope-${shared.kind}-${shared.id}` } : null; })() })).filter(m => m.registration);
     try {
       const url = new URL('/api/search', this.vectorUrl);
