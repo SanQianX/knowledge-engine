@@ -15,7 +15,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function main() {
   const child = spawn(process.execPath, [path.join(__dirname, 'product-preview.js')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
-    ...process.env, KB_PRODUCT_TEST_ROOT: root, KB_PRODUCT_TEST_PORT: '0', KB_ACCEPTANCE_REAL_PROFILE_ID: '', KB_ACCEPTANCE_REAL_EMBEDDING: '0', KB_ACCEPTANCE_STREAM_DELAY_MS: '1800', KB_ACCEPTANCE_DISTINCT_MEMORIES: '1', KB_ACCEPTANCE_TITLELESS_OUTPUT: '1',
+    ...process.env, KB_PRODUCT_TEST_ROOT: root, KB_PRODUCT_TEST_PORT: '0', KB_ACCEPTANCE_REAL_PROFILE_ID: '', KB_ACCEPTANCE_REAL_EMBEDDING: '0', KB_ACCEPTANCE_STREAM_DELAY_MS: '1800', KB_ACCEPTANCE_DISTINCT_MEMORIES: '1', KB_ACCEPTANCE_TITLELESS_OUTPUT: '1', KB_ACCEPTANCE_INVALID_MEMORY_CANDIDATE: '1',
   } });
   let tail = ''; child.stdout.on('data', data => { tail = (tail + data).slice(-6000); }); child.stderr.on('data', data => { tail = (tail + data).slice(-6000); });
   let browser, environment;
@@ -89,6 +89,9 @@ async function main() {
     await waitFor(async () => (await api('/api/engine/runs')).runs.filter(r => r.state === 'succeeded').length === 2, 'both projects indexed', 45000);
     const runs = (await api('/api/engine/runs')).runs;
     assert.equal(runs.length, 2); assert.ok(runs.every(r => r.state === 'succeeded' && r.indexState === 'succeeded'));
+    assert.ok(runs.every(r => r.memoryCapture.accepted === 1 && r.memoryCapture.rejected[0].code === 'ENTRY_NOT_PROMOTED'));
+    await waitFor(() => run("document.getElementById('activityUpdates').textContent.includes('依据无效，未纳入候选箱')"), 'invalid model candidates remain visible without blocking valid promotion');
+    await waitFor(async () => (await api('/api/logs?q=knowledge.memory.candidate_rejected')).entries.length === 2, 'candidate rejection diagnostics durable and linked to real commits');
     for (const [index, project] of projects.entries()) {
       const text = fs.readFileSync(path.join(project.knowledgePath, `changes/${commits[index].sha.slice(0, 12)}.md`), 'utf8');
       assert.ok(text.includes(commits[index].sha)); assert.match(text, /^# 提交 .* 变更记录/);

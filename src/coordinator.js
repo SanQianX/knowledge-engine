@@ -37,11 +37,12 @@ class EngineCoordinator extends EventEmitter {
     this.safeMessage = diagnostics.sanitize;
     this.closed = false;
     this.sharedIndexJobs = new Map();
+    this.memoryIndexUpdates = new Set();
     this.sharedIndexDirty = new Set();
     this.sharedIndexQueue = Promise.resolve();
     this.memories = new MemoryService(store, {
-      getIndexStatus: scope => scope && this.sharedIndexJobs.has(scope.id) ? 'pending' : null,
-      onMaterialized: scope => { this.indexSharedScope(scope).catch(() => {}); },
+      getIndexStatus: scope => scope && this.memoryIndexUpdates.has(scope.id) && this.sharedIndexJobs.has(scope.id) ? 'pending' : null,
+      onMaterialized: scope => { this.memoryIndexUpdates.add(scope.id); this.indexSharedScope(scope).catch(() => {}); },
       onSyncChange: (scope, code) => {
         this.emit('progress', store.addEvent({ type: 'memory.sync', scopeId: scope.id, summary: code ? `记忆文件待恢复（${code}）` : '记忆文件已恢复同步' }));
         const log = code ? 'error' : 'info';
@@ -219,7 +220,9 @@ class EngineCoordinator extends EventEmitter {
       let staging = null;
       if (claimRunId && fs.existsSync(this.promotion.manifestPath(run.projectId, claimRunId))) staging = this.promotion.readManifest(run.projectId, claimRunId);
       this.store.updateRun(run.runId, { phase: 'promoted', promotedAt: new Date().toISOString(), staging });
-      this.memories.capture(run);
+      const memoryCapture = this.memories.capture(run);
+      this.store.updateRun(run.runId, { memoryCapture });
+      if (memoryCapture.rejected.length) await this.diagnostics.warn('knowledge.memory.candidate_rejected', '部分记忆候选依据无效，未放入候选箱；有效知识已保留。', { projectId: run.projectId, runId: run.runId, operationId: run.runId, commitSha: run.commitSha, phase: 'memory-capture', context: memoryCapture });
       this.notify(run, '知识已晋升，正在更新索引');
       await this.index(run);
     } catch (error) {
@@ -271,7 +274,7 @@ class EngineCoordinator extends EventEmitter {
         if (current.index?.status === 'ready' && current.index.fingerprint === fingerprint) {
           const health = await fetch(new URL('/api/projects', this.vectorUrl), { signal: AbortSignal.timeout(8000) });
           const payload = await health.json();
-          if (health.ok && payload.projects?.some(p => p.name === `scope-${scope.kind}-${scope.id}` && p.hasIndex && this.layout.pathsEqual(p.sourceDir || '', scope.knowledgePath))) return;
+          if (health.ok && payload.projects?.some(p => p.name === `scope-${scope.kind}-${scope.id}` && p.hasIndex && this.layout.pathsEqual(p.sourceDir || '', scope.knowledgePath))) { if (!this.sharedIndexDirty.has(scope.id)) this.memoryIndexUpdates.delete(scope.id); return; }
         }
         await requestIndex({ baseUrl: this.vectorUrl, route: '/api/import', body: { projectName: `scope-${scope.kind}-${scope.id}`, sourceDir: scope.knowledgePath, watch: false }, attempt, sanitize: this.safeMessage });
         index = { status: 'ready', fingerprint, attempts: attempt, updatedAt: new Date().toISOString() };
@@ -286,6 +289,7 @@ class EngineCoordinator extends EventEmitter {
       const changed = current.index?.status !== index.status || current.index?.fingerprint !== index.fingerprint;
       current.index = index;
       this.store.save();
+      if (!this.sharedIndexDirty.has(scope.id)) this.memoryIndexUpdates.delete(scope.id);
       if (changed) this.emit('progress', this.store.addEvent({ type: 'scope.index', brainId: scope.brainId, scopeId: scope.id, summary: current.index.status === 'ready' ? '共享知识索引已更新' : current.index.message }));
     }).finally(() => { this.sharedIndexJobs.delete(scope.id); if (this.sharedIndexDirty.delete(scope.id) && !this.closed) this.indexSharedScope(scope).catch(() => {}); });
     this.sharedIndexQueue = job;

@@ -19,6 +19,9 @@ test('worker completion, timeout and shutdown wait for actual process exit', asy
   const completed = new HeadlessAnalyzer({ workerPath, resolveProfile: () => ({ apiKey: 'test-not-a-secret', mainModel: 'complete' }) });
   const first = { ...input(), config: { knowledgeLanguage: 'en-US' } }; await completed.runClaim(first); stopped(first);
   assert.match(fs.readFileSync(path.join(first.stagingPath, 'prompt.txt'), 'utf8'), /OUTPUT LANGUAGE: English/);
+  const prompt = fs.readFileSync(path.join(first.stagingPath, 'prompt.txt'), 'utf8');
+  assert.ok(prompt.includes('entryId MUST equal an operations[].path'));
+  assert.ok(prompt.includes('"entryId":"changes/aaaaaaaaaaaa.md"'));
   assert.match(JSON.parse(fs.readFileSync(first.manifestPath)).operations[0].sha256, /^sha256:/);
   await completed.close();
   const timeout = new HeadlessAnalyzer({ workerPath, timeoutMs: 500, resolveProfile: () => ({ apiKey: 'test-not-a-secret', mainModel: 'hang' }) });

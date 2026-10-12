@@ -54,6 +54,11 @@ async function main() {
     assert.equal(code, 0, name + ': ' + output); return output;
   };
   const list = async () => (await api('/api/engine/memories')).memories;
+  const poll = async (check, label, timeout) => {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) { const result = await check(); if (result) return result; await new Promise(resolve => setTimeout(resolve, 1000)); }
+    throw new Error('Timed out waiting for ' + label);
+  };
   const paidIndexes = () => {
     const directory = path.join(environment.knowledgeRoot, '.indexes');
     const result = {};
@@ -104,9 +109,10 @@ async function main() {
       await click(card + ` [data-memory-action="${action}"]`);
       await waitFor(() => page('document.getElementById("memoryDialog").open'), 'review form');
       await page(`document.getElementById('memoryText').value=${JSON.stringify(text)};document.getElementById('memoryScope').value=${JSON.stringify(type)};document.getElementById('memoryScope').dispatchEvent(new Event('change',{bubbles:true}));${type === 'global' ? '' : `document.getElementById('memoryTarget').value=${JSON.stringify(id)};`}`);
-      assert.equal(await page('document.getElementById("memoryOriginal").textContent'), originalText);
+      assert.equal(await page('document.getElementById("memoryOriginal").textContent'), '原始总结：' + originalText);
       assert.equal(await page('document.getElementById("memoryQuote").textContent'), sourceEvidence.quote);
       await page('document.querySelector(".memory-evidence").open=true');
+      assert.equal(await page('document.documentElement.scrollWidth > innerWidth'), false);
       await browser.screenshot(path.join(proofDir, `${suffix}-review-1920.png`));
       await click('#confirmMemory');
       await waitFor(() => page('!document.getElementById("memoryDialog").open'), 'atomic review acknowledgment');
@@ -171,7 +177,7 @@ async function main() {
     } finally { await client.close(); }
     const { session } = await api('/api/terminal/sessions', { context: { contextId: projects[1].modules.terminal.projectId, workspaceRef: projects[1].modules.terminal.projectId }, agentId: 'claude-code', aiProfileId: 'acceptance-model', permissionMode: 'bypassPermissions' });
     await api(`/api/terminal/sessions/${session.sessionId}/input`, { text: `${marker} 只保留主要功能：请先参考本次任务的知识上下文，说明其中的长期偏好和来源完整 commit，不修改文件、不提交。回答 SCOPED_MEMORY_CONTEXT_OK。` });
-    const finished = await waitFor(async () => {
+    const finished = await poll(async () => {
       const result = await api(`/api/terminal/sessions/${session.sessionId}`);
       assert.ok(!result.events.some(event => event.type === 'claude/error' || event.type === 'claude/result' && event.isError));
       return result.session.state === 'idle' && result.events.at(-1)?.type === 'claude/turn-end' ? result : false;

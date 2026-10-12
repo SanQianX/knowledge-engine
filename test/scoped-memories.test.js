@@ -50,6 +50,25 @@ test('confirmation edits content and chooses any existing target; scope filterin
   assert.equal(f.service.list()[0].text, '编辑后的规则alpha');
 });
 
+test('invalid model candidate document IDs are reported without inventing provenance or losing valid knowledge', async t => {
+  const f = await fixture(t);
+  const run = { projectId: 'project-a', commitSha: 'b'.repeat(40), runId: 'run-candidates', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create' }], memoryCandidates: [
+    { text: '有效偏好', entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。' },
+    { text: '有效偏好', entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。' },
+    { text: '错误标识', entryId: 'candidate-minimal-scope', quote: '保持主要功能简单，避免无必要实体。' },
+    { text: '错误引用', entryId: 'README.md', quote: '不存在的引用也超过八个字符' },
+  ] } };
+  const report = f.service.capture(run);
+  assert.equal(report.accepted, 1); assert.equal(report.deduplicated, 1);
+  assert.deepEqual(report.rejected.map(r => r.code), ['ENTRY_NOT_PROMOTED', 'QUOTE_MISMATCH']);
+  assert.equal(f.service.list().length, 1); assert.ok(fs.existsSync(path.join(f.store.getProject('project-a').knowledgePath, 'README.md')));
+  const before = f.store.state.memories, save = f.store.save;
+  f.store.save = () => { throw Object.assign(new Error('Controlled disk write failure'), { code: 'EIO' }); };
+  try { assert.throws(() => f.service.capture({ ...run, staging: { ...run.staging, memoryCandidates: [{ ...run.staging.memoryCandidates[0], text: '不能部分保存' }] } }), { code: 'EIO' }); }
+  finally { f.store.save = save; }
+  assert.deepEqual(f.store.state.memories, before);
+});
+
 test('global and domain memories remain independent, move safely, and follow current domain membership', async t => {
   const f = await fixture(t);
   const global = f.capture('共用规则beta', 'global');

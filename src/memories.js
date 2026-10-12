@@ -97,24 +97,36 @@ class MemoryService {
     return this.store.state.memories.filter(m => (!brainId || m.brainId === brainId) && (!status || m.status === status) && (!scopeType || this.scopeOf(m).type === scopeType) && (!scopeId || this.scopeOf(m).id === scopeId)).map(m => this.project(m));
   }
   capture(run) {
+    const report = { accepted: 0, deduplicated: 0, rejected: [] };
     const project = this.store.getProject(run.projectId);
-    if (!project || !run.promotedAt) return;
+    if (!project || !run.promotedAt) return report;
     const candidates = Array.isArray(run.staging?.memoryCandidates) ? run.staging.memoryCandidates : [];
-    for (const raw of candidates.slice(0, 20)) {
-      if (!raw || typeof raw !== 'object') continue;
+    const before = this.store.state.memories, next = [...before];
+    for (const [index, raw] of candidates.slice(0, 20).entries()) {
+      const reject = code => report.rejected.push({ index, code });
+      if (!raw || typeof raw !== 'object') { reject('INVALID_CANDIDATE'); continue; }
       const text = String(raw.text || '').trim();
       const quote = String(raw.quote || '').trim();
       const entryId = String(raw.entryId || '');
       const file = path.resolve(project.knowledgePath, entryId);
-      if (!text || text.length > 2000 || quote.length < 8 || !run.staging.operations?.some(op => op.operation !== 'delete' && op.path === entryId) || !this.layout.isPathInside(project.knowledgePath, file, { realpath: true }) || !fs.existsSync(file) || !fs.readFileSync(file, 'utf8').includes(quote)) continue;
+      if (!text || text.length > 2000 || quote.length < 8) { reject('INVALID_TEXT_OR_QUOTE'); continue; }
+      if (!run.staging.operations?.some(op => op.operation !== 'delete' && op.path === entryId)) { reject('ENTRY_NOT_PROMOTED'); continue; }
+      if (!this.layout.isPathInside(project.knowledgePath, file, { realpath: true })) { reject('PATH_OUTSIDE_ROOT'); continue; }
+      try { if (!fs.readFileSync(file, 'utf8').includes(quote)) { reject('QUOTE_MISMATCH'); continue; } }
+      catch { reject('EVIDENCE_UNREADABLE'); continue; }
       const brainId = project.brainId || 'brain-default';
       const scopeType = raw.scopeType === 'global' ? 'global' : raw.scopeType === 'domain' && project.domainId ? 'domain' : 'project';
       const scopeId = scopeType === 'global' ? brainId : scopeType === 'domain' ? project.domainId : project.projectId;
       const key = fingerprint(brainId, scopeType, scopeId, text);
-      if (this.store.state.memories.some(m => m.captureFingerprint === key || fingerprint(m.brainId || 'brain-default', this.scopeOf(m).type, this.scopeOf(m).id, m.text) === key || !m.scopeType && m.evidence.projectId === project.projectId && normalized(m.originalText || m.text) === normalized(text))) continue;
-      this.store.state.memories.push({ id: `memory-${crypto.randomUUID()}`, fingerprint: key, captureFingerprint: key, brainId, domainId: project.domainId || null, scopeType, scopeId, text, originalText: text, status: 'candidate', evidence: { projectId: project.projectId, commitSha: run.commitSha, runId: run.runId, entryId, quote }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      if (next.some(m => m.captureFingerprint === key || fingerprint(m.brainId || 'brain-default', this.scopeOf(m).type, this.scopeOf(m).id, m.text) === key || !m.scopeType && m.evidence.projectId === project.projectId && normalized(m.originalText || m.text) === normalized(text))) { report.deduplicated++; continue; }
+      next.push({ id: `memory-${crypto.randomUUID()}`, fingerprint: key, captureFingerprint: key, brainId, domainId: project.domainId || null, scopeType, scopeId, text, originalText: text, status: 'candidate', evidence: { projectId: project.projectId, commitSha: run.commitSha, runId: run.runId, entryId, quote }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      report.accepted++;
     }
-    this.store.save();
+    if (report.accepted) {
+      this.store.state.memories = next;
+      try { this.store.save(); } catch (error) { this.store.state.memories = before; throw error; }
+    }
+    return report;
   }
   async update(id, input) {
     if (this.closed) throw new DomainError('PROJECT_BUSY', '引擎正在关闭，请稍后重试。', { status: 409 });
