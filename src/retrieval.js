@@ -121,7 +121,8 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       const run = this.store.listRuns(row.scope_project_id).find(r => r.promotedAt && r.staging?.operations?.some(op => op.path === row.entry_id));
       const source = this.store.getProject(row.scope_project_id) || this.store.state.sharedScopes.find(s => s.id === row.scope_project_id);
       const memory = source?.kind === 'brain' && row.entry_id.startsWith('memories/') ? this.memories.memoryForChunk(source, row.entry_id, row.heading_path) : null;
-      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha: memory?.evidence.commitSha || run?.commitSha || null, ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id } : {}) };
+      const commitSha = memory ? memory.evidence?.commitSha || null : run?.commitSha || null;
+      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha, ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id, ...(memory.sourceType === 'manual' ? { memorySourceType: 'manual' } : {}) } : {}) };
     });
     const slots = result.results.map((r, i) => r.memoryId ? i : -1).filter(i => i >= 0);
     const ordered = slots.map(i => result.results[i]).sort((a, b) => ({ project: 0, domain: 1, global: 2 }[a.memoryScopeType] - { project: 0, domain: 1, global: 2 }[b.memoryScopeType]) || b.score - a.score);

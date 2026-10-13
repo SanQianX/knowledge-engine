@@ -39,7 +39,13 @@ class EngineStore {
       }
       for (const [journalId, sequence] of Object.entries(raw.journalCursors || {})) if (!/^(global|sha256:[a-f0-9]{64})$/.test(journalId) || !Number.isSafeInteger(sequence) || sequence < 0) throw new Error('Invalid journal cursor');
       for (const scope of raw.sharedScopes || []) if (!scope || !['brain', 'domain'].includes(scope.kind) || !path.isAbsolute(scope.knowledgePath || '')) throw new Error('Invalid shared scope');
-      for (const memory of raw.memories || []) if (!memory || !['candidate', 'confirmed', 'ignored'].includes(memory.status) || typeof memory.text !== 'string' || !memory.evidence?.projectId || !/^[a-f0-9]{40}$/.test(memory.evidence.commitSha || '')) throw new Error('Invalid memory record');
+      for (const memory of raw.memories || []) {
+        if (!memory || !['candidate', 'confirmed', 'ignored'].includes(memory.status) || typeof memory.text !== 'string' || memory.sourceType !== undefined && !['manual', 'agent'].includes(memory.sourceType)) throw new Error('Invalid memory record');
+        if (memory.sourceType === 'manual') {
+          validateProjectId(memory.brainId);
+          if (memory.status === 'candidate' || !memory.text.trim() || memory.text.length > 2000 || !memory.scopeType || memory.evidence !== null || !Number.isFinite(Date.parse(memory.createdAt)) || !Number.isFinite(Date.parse(memory.updatedAt))) throw new Error('Invalid manual memory record');
+        } else if (!memory.evidence?.projectId || !/^[a-f0-9]{40}$/.test(memory.evidence.commitSha || '')) throw new Error('Invalid memory evidence');
+      }
       for (const memory of raw.memories || []) if (memory.scopeType !== undefined || memory.scopeId !== undefined) {
         if (!['global', 'domain', 'project'].includes(memory.scopeType)) throw new Error('Invalid memory scope');
         validateProjectId(memory.scopeId);

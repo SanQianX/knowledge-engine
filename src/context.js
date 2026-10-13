@@ -46,7 +46,7 @@ class EngineContext {
       let memorySize = 0;
       for (const memory of candidates) {
         const target = this.memories.scopeOf(memory);
-        const item = { projectId: brain.id, spaceId: `brain:${brain.id}`, entryId: this.memories.entry(memory), commitSha: memory.evidence?.commitSha || null, memoryId: memory.id, memoryScopeType: target.type, memoryScopeId: target.id, sourceProjectId: memory.evidence?.projectId || null, updatedAt: updatedAt(memory), title: `${{ project: '项目', domain: '领域', global: '全局' }[target.type]}记忆`, text: clean(memory.text) };
+        const item = { projectId: brain.id, spaceId: `brain:${brain.id}`, entryId: this.memories.entry(memory), commitSha: memory.evidence?.commitSha || null, memoryId: memory.id, memoryScopeType: target.type, memoryScopeId: target.id, sourceProjectId: memory.evidence?.projectId || null, ...(memory.sourceType === 'manual' ? { sourceType: 'manual' } : {}), updatedAt: updatedAt(memory), title: `${{ project: '项目', domain: '领域', global: '全局' }[target.type]}记忆`, text: clean(memory.text) };
         if (memorySize + encode(item).length + 1 > 3000) continue;
         memories.push(item); memorySize += encode(item).length + 1;
       }

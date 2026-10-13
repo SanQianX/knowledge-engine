@@ -64,6 +64,7 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 | GET / POST | `/api/events` | 真实事件查询 / 仅调试模式注入事件 |
 | POST | `/api/bridge/notify` | 唤醒 journal 消费；通知丢失仍由轮询恢复 |
 | GET / PATCH | `/api/memories`、`/api/memories/:id` | 按 status/scopeType/scopeId 筛选；一次编辑内容、适用范围和确认状态；来源证据只读 |
+| POST | `/api/memories` | `{ text, brainId?, scopeType?, scopeId? }` → 手动添加已确认记忆；默认全局，领域/项目必须指定已登记目标，不接受伪造来源 |
 | POST | `/api/scopes` | 外壳投影智脑、领域共享目录；受运行期鉴权保护 |
 | POST | `/api/runtime-config` | 运行期模型配置，仅保留在内存；受鉴权保护 |
 | GET | `/api/runtime-auth` | 本机服务确认运行期鉴权；受鉴权保护，不对浏览器反代 |
@@ -95,6 +96,7 @@ node src/bin.js serve [--port 5790] [--host 127.0.0.1] [--data DIR]
 - 候选的 `entryId` 必须等于本次晋升清单中实际文档的 `operations[].path`，不是候选编号；引用必须与该文档原文匹配。无效候选不会伪造来源或阻塞有效知识更新，运行的 `memoryCapture` 与 `knowledge.memory.candidate_rejected` 日志记录安全的计数、序号和原因代码。
 - 记忆的适用范围为 `global/domain/project`，目标用 `scopeId` 指定；来源项目/领域不等于适用范围。新候选默认来源项目，分析器只有明确证据时才建议领域/全局；用户审核时可以编辑内容并选择当前智脑中的其他已有目标。原始总结与证据保持不变，同一范围内容去重，忽略和编辑后的原候选不会重复生成。
 - 长期记忆统一保存在已绑定的智脑共享目录：`memories/confirmed.md`（全局）、`memories/domains/<id>.md`、`memories/projects/<id>.md`。不创建第二份项目知识目录。现有 v5 缺少范围字段的记忆仍按全局解释；不读取 pre-v5 状态、不重扫历史。
+- 手动记忆以用户确认作为来源，记录 `sourceType: manual`、`evidence: null`，不伪造提交或分析运行。内容限制为 1–2000 字符，同范围内容去重；创建、编辑、投影与恢复复用引擎受控写入。空项目列表也可添加全局记忆，但必须已绑定共享目录；无需模型分析或 Git 提交，索引状态独立报告。
 - 任务检索只允许当前项目、当前所属领域与全局的已确认记忆，即使检索整个智脑也不放宽专属记忆范围。过滤在排名之前完成，`get` 同样校验；向量旧内容不能绕过当前状态和文件一致性校验。已确认记录修改范围会同步清理旧投影；写入失败显示待同步并自动重试，未同步文件不能进入上下文。
 - 旧格式不读取、不自动迁移。损坏的正式状态不覆盖、不清空。
 - 引擎状态复用受控原子写入：独占随机临时文件、文件同步、Windows 短暂共享冲突有界重试；永久失败保留原状态并清理本次临时文件，绝不先删正式状态。

@@ -207,6 +207,52 @@ async function main() {
     await click('#confirmMemory');
     await waitFor(() => run("!document.getElementById('memoryDialog').open"), 'scope review settles');
 
+    const beforeManual = (await api('/api/engine/memories')).memories.length;
+    await click('#addMemory'); await fill('#memoryText', '取消添加不得写入'); await click('#memoryDialog [data-close="memoryDialog"]');
+    assert.equal((await api('/api/engine/memories')).memories.length, beforeManual);
+    await click('[data-memory-tab="candidate"]'); await click('#addMemory');
+    assert.equal(await run("document.getElementById('memoryScope').value"), 'project', 'manual memory defaults to the current project, not all projects');
+    assert.equal(await run("document.getElementById('memoryTarget').value"), projects[0].projectId);
+    assert.equal(await run("document.getElementById('memoryEvidenceDetails').hidden && document.getElementById('saveMemoryCandidate').hidden"), true);
+    const manualText = '手动项目约定：导出采用42 <img src=x onerror="window.__manualXss=1">';
+    await fill('#memoryText', manualText); await click('#confirmMemory');
+    await waitFor(() => run("!document.getElementById('memoryDialog').open && document.getElementById('memoryContent').textContent.includes('手动项目约定')"), 'manual creation saves and switches to confirmed tab with a matching filter');
+    const manualProject = (await api('/api/engine/memories')).memories.find(m => m.text === manualText);
+    assert.equal(manualProject.sourceType, 'manual'); assert.equal(manualProject.status, 'confirmed'); assert.equal(manualProject.evidence, null);
+    assert.equal(await run("window.__manualXss || 0"), 0); assert.equal(await run("document.getElementById('memoryContent').querySelector('img') !== null"), false);
+    assert.equal(await run(`document.querySelector('[data-memory-card="${manualProject.id}"]').textContent.includes('手动添加')`), true);
+    await click('#addMemory'); await fill('#memoryText', manualText); await click('#confirmMemory');
+    await waitFor(() => run("!document.getElementById('memoryFeedback').hidden && document.getElementById('memoryFeedback').textContent.includes('相同记忆')"), 'duplicate feedback preserves the draft and dialog');
+    assert.equal(await run("document.getElementById('memoryDialog').open"), true);
+    assert.equal((await api('/api/engine/memories')).memories.length, beforeManual + 1);
+    await click('#memoryDialog [data-close="memoryDialog"]');
+    await click(`[data-memory-action="edit"][data-memory-id="${manualProject.id}"]`);
+    assert.equal(await run("document.getElementById('memoryEvidenceDetails').hidden"), true);
+    await fill('#memoryText', '手动项目约定：导出采用43'); await click('#confirmMemory');
+    await waitFor(() => run("!document.getElementById('memoryDialog').open && document.getElementById('memoryContent').textContent.includes('导出采用43')"), 'manual edit updates the card');
+    for (const [type, text] of [['domain', '手动领域约定：错误文案使用中文'], ['global', '手动全局约定：不要添加无必要实体']]) {
+      await click('#addMemory'); await fill('#memoryText', text);
+      await run(`document.getElementById('memoryScope').value=${JSON.stringify(type)};document.getElementById('memoryScope').dispatchEvent(new Event('change',{bubbles:true}))`);
+      if (type === 'domain') await run(`document.getElementById('memoryTarget').value=${JSON.stringify(projects[0].domainId)}`);
+      await click('#confirmMemory');
+      await waitFor(() => run(`!document.getElementById('memoryDialog').open && document.getElementById('memoryContent').textContent.includes(${JSON.stringify(text)})`), 'manual ' + type + ' feedback');
+    }
+    const manualMemories = (await api('/api/engine/memories')).memories.filter(m => m.sourceType === 'manual');
+    assert.equal(manualMemories.length, 3);
+    await waitFor(async () => (await api('/api/engine/memories')).memories.filter(m => m.sourceType === 'manual').every(m => m.syncStatus === 'ready' && m.indexStatus === 'ready'), 'manual memories reach the real derived vector index', 30000);
+    for (const p of projects) {
+      const context = await api('/api/engine/context', { projectId: p.projectId, query: '开发导出功能', scope: 'brain', client: 'workbench' });
+      assert.equal(context.memories.filter(m => m.sourceType === 'manual').length, p.projectId === projects[0].projectId ? 3 : 2);
+      assert.ok(context.memories.filter(m => m.sourceType === 'manual').every(m => m.commitSha === null));
+    }
+    for (const m of manualMemories) {
+      const entry = m.scopeType === 'global' ? 'memories/confirmed.md' : `memories/${m.scopeType === 'domain' ? 'domains' : 'projects'}/${m.scopeId}.md`;
+      const indexed = await api('/api/engine/search', { projectId: projects[0].projectId, scope: 'brain', query: m.text });
+      assert.ok(indexed.results.some(r => r.memoryId === m.id && r.entry_id === entry && r.commitSha === null && r.match_channels.includes('index:vector-hub')), 'manual memory is actually indexed, not merely served by text fallback');
+    }
+    await run("document.getElementById('memoryScopeFilter').value='';document.getElementById('memoryScopeFilter').dispatchEvent(new Event('change',{bubbles:true}))");
+    await browser.screenshot(path.join(proof, 'manual-memories-1920-light.png'));
+
     await click('[data-view="activity"]'); await click('[data-activity-tab="sessions"]');
     await waitFor(() => frame('bridgeFrame', "document.getElementById('main-title').textContent.includes('测试项目 A')"), 'native event bridge bound to A');
     await waitFor(() => frame('bridgeFrame', "document.getElementById('live-flow').textContent.includes('WORKBENCH_RUNTIME_OK')"), 'native workbench events appear in bridge UI');
@@ -279,6 +325,7 @@ async function main() {
     await click('[data-close="logsDialog"]'); await waitFor(() => run("window.__webStreams.filter(s=>s.url.includes('/api/logs/stream') && s.readyState!==2).length === 0"), 'diagnostic subscription closes');
     await browser.send('Page.navigate', { url: environment.url + '/#memory' });
     await waitFor(() => run("document.getElementById('memoryContent').textContent.includes('网页验收偏好')"), 'page reopen restores durable memory');
+    await waitFor(() => run("document.getElementById('memoryContent').textContent.includes('手动全局约定') && document.getElementById('memoryContent').textContent.includes('导出采用43')"), 'page reopen restores manual memories and immutable manual provenance');
     assert.equal(await run("document.documentElement.dataset.theme"), 'dark');
     assert.equal(await run("document.getElementById('brainLabel').textContent"), '网页验收智脑');
     await click('[data-view="projects"]');

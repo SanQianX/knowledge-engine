@@ -128,6 +128,30 @@ class MemoryService {
     }
     return report;
   }
+  async create(input) {
+    if (this.closed) throw new DomainError('PROJECT_BUSY', '引擎正在关闭，请稍后重试。', { status: 409 });
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['text', 'brainId', 'scopeType', 'scopeId'].includes(key))) throw new DomainError('INVALID_ARGUMENT', '只支持填写记忆内容与适用范围，不能指定来源证据。');
+    if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 2000) throw new DomainError('INVALID_ARGUMENT', '记忆内容必须为 1–2000 个字符。');
+    const brainId = input.brainId === undefined ? 'brain-default' : input.brainId;
+    validateProjectId(brainId);
+    const type = input.scopeType === undefined ? 'global' : input.scopeType;
+    const targetId = input.scopeId === undefined && type === 'global' ? brainId : input.scopeId;
+    const job = AtomicFile.withFileLock(this.lock(), async () => {
+      this.validateScope(type, targetId, brainId);
+      if (!this.brainScope(brainId)) throw new DomainError('INVALID_ARGUMENT', '请先绑定智脑共享目录。', { status: 409 });
+      const text = input.text.trim(), key = fingerprint(brainId, type, targetId, text);
+      if (this.store.state.memories.some(m => fingerprint(m.brainId || 'brain-default', this.scopeOf(m).type, this.scopeOf(m).id, m.text) === key)) throw new DomainError('MEMORY_DUPLICATE', '该范围内已存在相同记忆。', { status: 409 });
+      // User confirmation is the provenance; never invent a model run or Git commit.
+      const now = new Date().toISOString();
+      const memory = { id: `memory-${crypto.randomUUID()}`, fingerprint: key, brainId, scopeType: type, scopeId: targetId, sourceType: 'manual', text, originalText: text, status: 'confirmed', evidence: null, createdAt: now, updatedAt: now };
+      const before = this.store.state.memories;
+      this.store.state.memories = [...before, memory];
+      try { this.store.save(); } catch (error) { this.store.state.memories = before; throw error; }
+      await this.materialize(); return this.project(memory);
+    });
+    this.writes.add(job);
+    try { return await job; } finally { this.writes.delete(job); }
+  }
   async update(id, input) {
     if (this.closed) throw new DomainError('PROJECT_BUSY', '引擎正在关闭，请稍后重试。', { status: 409 });
     if (Object.keys(input).some(key => !['text', 'status', 'scopeType', 'scopeId'].includes(key))) throw new DomainError('INVALID_ARGUMENT', '来源证据和文件路径不能修改。');
@@ -159,7 +183,8 @@ class MemoryService {
       // Preserve legacy global bytes until the user actually edits that record.
       const scopeText = m.scopeType ? `适用范围：${{ global: '全局', domain: '领域', project: '项目' }[scope.type]} · ${scope.id}\n\n` : '';
       const text = m.scopeType ? m.text.replace(/^\s*(#{1,6})\s/gm, '\\$1 ') : m.text;
-      return `## ${m.id}\n\n${scopeText}${text}\n\n来源：${m.evidence.projectId} · ${m.evidence.commitSha} · ${m.evidence.entryId}\n`;
+      const source = m.sourceType === 'manual' ? '手动添加（用户确认）' : `${m.evidence.projectId} · ${m.evidence.commitSha} · ${m.evidence.entryId}`;
+      return `## ${m.id}\n\n${scopeText}${text}\n\n来源：${source}\n`;
     }).join('\n');
   }
   existingEntries(scope) {

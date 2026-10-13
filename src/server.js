@@ -103,6 +103,11 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
   if (method === 'GET' && pathname === '/api/health') return { name: 'knowledge-engine', version: VERSION, dataSchemaVersion: store.state.schemaVersion, debug: ctx.debug, executionEnabled: coordinator.executionEnabled, uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000), dataDir: ctx.dataDir, counts: { projects: store.state.projects.length, runs: store.state.runs.length, running: coordinator.active.size }, journal: { cursor: store.state.cursor, cursors: store.state.journalCursors, consumer: 'knowledge-engine', enabled: coordinator.consume, error: coordinator.journalError || null, failures: [...coordinator.journalFailures.values()] }, concurrency: coordinator.concurrency };
   if (method === 'GET' && pathname === '/api/projects') return { projects: store.listProjects() };
   if (method === 'GET' && pathname === '/api/memories') return { memories: coordinator.memories.list(Object.fromEntries(search)) };
+  if (method === 'POST' && pathname === '/api/memories') {
+    const memory = await coordinator.memories.create(body);
+    coordinator.emit('progress', store.addEvent({ type: 'memory.created', summary: '已手动添加长期记忆' }));
+    return { memory };
+  }
   const memoryMatch = pathname.match(/^\/api\/memories\/([^/]+)$/);
   if (method === 'PATCH' && memoryMatch) {
     const memory = await coordinator.memories.update(decodeURIComponent(memoryMatch[1]), body);
