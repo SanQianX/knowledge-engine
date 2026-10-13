@@ -25,7 +25,7 @@ async function main() {
   const profile = new ProfileStore({ dataDir: path.join(environment.root, 'workbench') }).runtimeProfile('acceptance-model');
   const api = async route => { const r = await fetch(new URL(route, environment.url), { signal: AbortSignal.timeout(20000) }); const d = await r.json(); assert.ok(r.ok && d.ok !== false, route); return d; };
   const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
-  const memory = (await api('/api/engine/memories')).memories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
+  const memory = (await api('/api/engine/memories')).memories.find(m => m.status === 'confirmed' && (m.evidence?.projectId === project.projectId || m.sourceType === 'manual' && m.scopeType === 'project' && m.scopeId === project.projectId) && m.text.includes('AUTOCTX-'));
   const marker = memory?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0]; assert.ok(marker);
   const manager = new IntegrationManager({ rootDir: core });
   manager.verifyCodexInstallation();
@@ -34,7 +34,7 @@ async function main() {
   const prompt = '请说明当前项目的 exportRecords 接口在新开发中应返回哪些 JSON 字段，以及参数非法时应如何反馈。只读分析，不修改或提交文件，不读取配置或凭据，简短回答。';
   assert.ok(!/knowledge|知识库|MCP|检索|memoryLabel|AUTOCTX/i.test(prompt));
   const output = path.join(environment.root, 'real-codex-automatic-context-' + Date.now() + '.json');
-  const report = { passed: false, installationSource: environment.installationSource, version: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, projectId: project.projectId, marker, prompt, at: new Date().toISOString() };
+  const report = { passed: false, installationSource: environment.installationSource, version: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, memorySource: memory.sourceType || 'agent-candidate', projectId: project.projectId, marker, prompt, at: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const requests = [], events = [];
   const proxy = http.createServer((req, res) => {
@@ -43,7 +43,9 @@ async function main() {
     req.on('end', () => {
       let parsed = {}; try { parsed = JSON.parse(body); } catch {}
       const text = JSON.stringify({ input: parsed.input, instructions: parsed.instructions, messages: parsed.messages, system: parsed.system });
-      if (req.method === 'POST') requests.push({ number: requests.length + 1, model: parsed.model, containsTask: text.includes(prompt), containsOwnMemory: text.includes('<knowledge_context>') && text.includes(marker) && text.includes(memory.id), bodyHash: crypto.createHash('sha256').update(body).digest('hex') });
+      const strings = []; const walk = value => { if (typeof value === 'string') strings.push(value); else if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') Object.values(value).forEach(walk); };
+      walk({ input: parsed.input, instructions: parsed.instructions, messages: parsed.messages, system: parsed.system });
+      if (req.method === 'POST') requests.push({ number: requests.length + 1, model: parsed.model, containsTask: text.includes(prompt), containsFacts: strings.some(value => value.includes('<knowledge_context>') && /"facts":\[\{/.test(value) && value.includes('"role":"本项目事实"')), containsOwnMemory: text.includes('<knowledge_context>') && text.includes(marker) && text.includes(memory.id), bodyHash: crypto.createHash('sha256').update(body).digest('hex') });
       const target = new URL(resolveOpenAIBaseUrl(profile).replace(/\/$/, '') + req.url), headers = { ...req.headers, host: target.host }; delete headers.connection;
       const upstream = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers }, response => { res.writeHead(response.statusCode, response.headers); response.pipe(res); });
       upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); }); res.on('close', () => upstream.destroy()); upstream.end(body);
@@ -85,6 +87,7 @@ async function main() {
     const finished = events.find(e => e.method === 'turn/completed' && e.params?.turn?.id === turnId); assert.equal(finished?.params.turn.status, 'completed');
     assert.equal(requests[0]?.containsTask, true, 'do not silently skip an unknown earlier model request');
     assert.equal(requests[0]?.containsOwnMemory, true, 'native first development model request receives current confirmed product memory without a reminder');
+    assert.equal(requests[0]?.containsFacts, true, 'current-project facts must arrive, not only a memory envelope');
     const answer = events.filter(e => e.method === 'item/completed' && e.params?.item?.type === 'agentMessage').map(e => e.params.item.text).join('\n');
     assert.ok(answer.includes(marker), 'ordinary interface analysis must use the current confirmed convention, not an older historical value');
     assert.equal(git(['status', '--porcelain=v1']), before, 'read-only native task preserves all fixture files');

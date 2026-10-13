@@ -10,7 +10,8 @@ function main() {
   const prefix = process.argv[3]; assert.match(prefix || '', /^retrieval-(?:rc\d+|formal)$/);
   assert.equal(installation.schema, 'project-knowledge/installed-registry/v1'); assert.equal(installation.integrityPassed, true);
   const directory = path.resolve(__dirname, '../../.agent-state/acceptance/system-regression');
-  const sourceLabels = ['retrieval-rc3-engine22', 'retrieval-rc3-engine24', 'retrieval-rc3-shell22', 'retrieval-rc3-shell24',
+  const sourcePrefix = prefix === 'retrieval-formal' ? 'retrieval-rc4' : prefix;
+  const sourceLabels = [sourcePrefix + '-engine22', sourcePrefix + '-engine24', sourcePrefix + '-shell22', sourcePrefix + '-shell24',
     'retrieval-source-vector22', 'retrieval-source-vector24', 'retrieval-source-workbench22', 'retrieval-source-workbench24', 'retrieval-source-bridge22', 'retrieval-source-bridge24'];
   const candidateLabels = ['registry24', 'web22', 'web24', 'fault22', 'fault24', 'lifecycle22', 'lifecycle24', 'quality24', 'performance24',
     'user-query24', 'local-marketplace24', 'real-commits24', 'claude-real24', 'zcode-real24', 'workbench24', 'embedding24', 'surfaces24'];
