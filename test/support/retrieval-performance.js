@@ -6,8 +6,9 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const AtomicFile = require('../../src/runtime/atomic-file');
-const { RuntimeLayout } = require('../../src/runtime/layout');
-const { EngineRetrieval } = require('../../src/retrieval');
+const roots = require('./retrieval-runtime-roots').runtimeRoots();
+const { RuntimeLayout } = require(path.join(roots.engine, 'src/runtime/layout'));
+const { EngineRetrieval } = require(path.join(roots.engine, 'src/retrieval'));
 
 async function main() {
   const real = process.argv.includes('--real');
@@ -18,6 +19,7 @@ async function main() {
   if (path.dirname(root) !== owned || !path.basename(root).startsWith('retrieval-performance-')) throw new Error('INVALID_FIXTURE_ROOT');
   const reportFile = path.resolve(__dirname, `../../.agent-state/acceptance/retrieval-quality/performance-${Date.now()}.json`);
   const report = { schema: 'retrieval-performance/v1', passed: false, mode: real ? '1000 synthetic documents, real MiniMax embeddings and disk vector indexes' : '1000 synthetic documents, canonical text only; not vector performance', node: process.version, projects: 8, documents: 1000, durations: [] };
+  report.runtime = roots;
   const save = () => AtomicFile.writeJsonAtomic(reportFile, report);
   let server;
   try {
@@ -28,11 +30,11 @@ async function main() {
     const store = { state: { sharedScopes: [] }, getProject: id => projects.find(p => p.projectId === id), listProjects: () => projects, readRuntime: () => ({ index: {} }), listRuns: () => [] };
     let vectorUrl = 'http://127.0.0.1:1';
     if (real) {
-      const { ProfileStore } = require('../../../claude-ai-workbench/packages/server/lib/profile-store');
+      const { ProfileStore } = require(path.join(roots.workbench, 'packages/server/lib/profile-store'));
       const settings = new ProfileStore({ dataDir: path.join(os.homedir(), '.project-knowledge-v5/workbench') }).embeddingRuntime();
       if (!settings?.apiKey || settings.provider !== 'minimax') throw new Error('REAL_MINIMAX_EMBEDDING_REQUIRED');
-      const { VectorHub } = require('../../../vector-hub/dist/cjs/core/hub');
-      const { createMiniMaxEmbeddings } = require('../../../vector-hub/dist/cjs/core/embeddings');
+      const { VectorHub } = require(path.join(roots.vector, 'dist/cjs/core/hub'));
+      const { createMiniMaxEmbeddings } = require(path.join(roots.vector, 'dist/cjs/core/embeddings'));
       let queryCalls = 0, documentCalls = 0;
       const documentVectors = new Map();
       const base = createMiniMaxEmbeddings(settings.apiKey, { model: settings.model, ...(settings.endpoint ? { endpoint: settings.endpoint } : {}) });

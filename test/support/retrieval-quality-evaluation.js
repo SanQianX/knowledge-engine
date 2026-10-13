@@ -6,8 +6,9 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const Module = require('node:module');
-const { EngineRetrieval } = require('../../src/retrieval');
-const { RuntimeLayout } = require('../../src/runtime/layout');
+const roots = require('./retrieval-runtime-roots').runtimeRoots();
+const { EngineRetrieval } = require(path.join(roots.engine, 'src/retrieval'));
+const { RuntimeLayout } = require(path.join(roots.engine, 'src/runtime/layout'));
 const AtomicFile = require('../../src/runtime/atomic-file');
 const corpus = require('../fixtures/retrieval-quality-corpus');
 
@@ -22,6 +23,7 @@ async function evaluate({ real = false, compare = true, baselineRef = 'c8c600e66
   const proof = path.resolve(__dirname, '../../.agent-state/acceptance/retrieval-quality'); fs.mkdirSync(proof, { recursive: true });
   const reportPath = path.join(proof, `${real ? 'real-vector' : 'lexical'}-${Date.now()}.json`);
   const report = { schema: 'retrieval-quality/evaluation/v1', passed: false, mode: real ? 'synthetic labelled corpus + real embeddings' : 'deterministic current-file lexical retrieval', baselineCommit: baselineRef, currentCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' }).trim(), firstFailures: [], rows: [], startedAt: new Date().toISOString() };
+  report.runtime = roots;
   const save = () => AtomicFile.writeJsonAtomic(reportPath, report);
   let server, hub;
   const scoreTraces = new Map();
@@ -33,11 +35,11 @@ async function evaluate({ real = false, compare = true, baselineRef = 'c8c600e66
     const store = { state: { sharedScopes: [] }, getProject: id => projects.find(p => p.projectId === id), listProjects: () => projects, readRuntime: () => ({ index: {} }), listRuns: id => runs.filter(r => !id || r.projectId === id) };
     let vectorUrl = 'http://127.0.0.1:1';
     if (real) {
-      const { ProfileStore } = require('../../../claude-ai-workbench/packages/server/lib/profile-store');
+      const { ProfileStore } = require(path.join(roots.workbench, 'packages/server/lib/profile-store'));
       const settings = new ProfileStore({ dataDir: path.join(os.homedir(), '.project-knowledge-v5/workbench') }).embeddingRuntime();
       if (!settings?.apiKey) throw new Error('REAL_EMBEDDING_CONFIGURATION_REQUIRED');
-      const { VectorHub } = require('../../../vector-hub/dist/cjs/core/hub');
-      const { createMiniMaxEmbeddings, createOpenAIEmbeddings } = require('../../../vector-hub/dist/cjs/core/embeddings');
+      const { VectorHub } = require(path.join(roots.vector, 'dist/cjs/core/hub'));
+      const { createMiniMaxEmbeddings, createOpenAIEmbeddings } = require(path.join(roots.vector, 'dist/cjs/core/embeddings'));
       const embeddings = settings.provider === 'minimax' ? createMiniMaxEmbeddings(settings.apiKey, { ...(settings.model ? { model: settings.model } : {}), ...(settings.endpoint ? { endpoint: settings.endpoint } : {}) }) : createOpenAIEmbeddings(settings);
       hub = new VectorHub({ rootPath: path.join(root, '.indexes'), embeddings });
       for (const project of projects) await hub.syncFolder(project.projectId, project.knowledgePath);
