@@ -107,3 +107,11 @@ test('in-flight retrieval rejects changed primary ownership and discards referen
   f.retrieval.recallIndex = async () => { f.projects[0].domainId = 'new-domain'; };
   await assert.rejects(f.retrieval.search({ projectId: 'project-recipe', scope: 'domain', query: '导出校验' }), { code: 'PROJECT_SCOPE_CHANGED' });
 });
+
+test('late validation discards changed facts and fills from the next current rank without rereading unrelated files', async t => {
+  const f = await fixture(t, { 'project-recipe': { 'modules/first.md': '# 配方导出校验\n\n配方导出校验 dirty 参数。', 'modules/second.md': '# 导出校验\n\n导出时必须检查数组参数。' } });
+  f.retrieval.recallIndex = async () => { fs.writeFileSync(path.join(f.projects[0].knowledgePath, 'modules/first.md'), '# 已变化\n\n当前文件不再包含旧约定。'); };
+  const result = await f.retrieval.search({ projectId: 'project-recipe', query: '配方导出校验 dirty' });
+  assert.ok(result.results.length); assert.ok(result.results.every(r => r.entry_id === 'modules/second.md'));
+  assert.ok(!JSON.stringify(result).includes('配方导出校验 dirty 参数'));
+});

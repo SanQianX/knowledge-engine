@@ -30,19 +30,8 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     if (!['greeting', 'followup'].includes(ranking.intent(signals.indexQuery))) await this.recallIndex(scopes, signals.indexQuery, scanned.candidates, health);
     else health.index = 'not-requested';
     if (stamp !== scopeStamp(this.store.getProject(project.projectId))) throw new DomainError('PROJECT_SCOPE_CHANGED', '项目归属或绑定已变化，请重新检索。', { status: 409 });
-    const checked = new Map();
     for (const [id, c] of scanned.candidates) {
       if (stamps.get(c.projectId) !== scopeStamp(this.store.getProject(c.projectId) || this.store.state.sharedScopes.find(s => s.id === c.projectId))) { scanned.candidates.delete(id); continue; }
-      const key = `${c.spaceId}:${c.entryId}`;
-      if (!checked.has(key)) {
-        try {
-          const file = path.join(c.knowledgePath, c.entryId);
-          const valid = this.layout.isPathInside(c.knowledgePath, file, { realpath: true }) && !fs.lstatSync(file).isSymbolicLink()
-            && crypto.createHash('sha256').update(`chunker:${CHUNKER_VERSION}\n${fs.readFileSync(file, 'utf8')}`).digest('hex') === c.documentHash;
-          checked.set(key, valid);
-        } catch { checked.set(key, false); }
-      }
-      if (!checked.get(key)) scanned.candidates.delete(id);
       if (c.entryId.startsWith('memories/')) {
         const shared = this.store.state.sharedScopes.find(s => s.id === c.projectId);
         if (!this.memories?.readableEntry(shared, c.entryId, registrationBefore) || !this.memories.memoryForChunk(shared, c.entryId, c.headingPath)) scanned.candidates.delete(id);
@@ -53,7 +42,23 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       return { ...scored, excluded: Boolean(signals.commitPrefixes?.length || c.knownFileQuery) && scored.score <= 0 };
     });
     const ordered = input.policy === 'project-first' ? [...ranked.filter(c => c.scopeReason === 'primary'), ...ranked.filter(c => c.scopeReason !== 'primary')] : ranked;
-    return { project, scopes, signals, health, candidates: ordered.slice(0, this.candidateLimit), totalCurrentChunks: scanned.candidates.size, intent: ranking.intent(signals.indexQuery) };
+    const checked = new Map(), candidates = [];
+    // Revalidate every returned document after the asynchronous vector call,
+    // not every unrelated file a second time. Changed/deleted/escaped facts
+    // are discarded before leaving this service, then the next rank is tried.
+    for (const c of ordered) {
+      const key = `${c.spaceId}:${c.entryId}`;
+      if (!checked.has(key)) {
+        try {
+          const file = path.join(c.knowledgePath, c.entryId);
+          checked.set(key, this.layout.isPathInside(c.knowledgePath, file, { realpath: true }) && !fs.lstatSync(file).isSymbolicLink()
+            && crypto.createHash('sha256').update(`chunker:${CHUNKER_VERSION}\n${fs.readFileSync(file, 'utf8')}`).digest('hex') === c.documentHash);
+        } catch { checked.set(key, false); }
+      }
+      if (checked.get(key)) candidates.push(c);
+      if (candidates.length >= this.candidateLimit) break;
+    }
+    return { project, scopes, signals, health, candidates, totalCurrentChunks: scanned.candidates.size, intent: ranking.intent(signals.indexQuery) };
   }
   signalSet(input = {}) {
     const signals = super.signalSet(input);
