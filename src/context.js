@@ -48,7 +48,9 @@ class EngineContext {
           try {
             const fresh = await this.retrieval.get({ projectId: ref.projectId, entryId: ref.entryId });
             const text = fresh.chunks.map(c => c.chunk_text).join('\n');
-            const chunk = chunkMarkdown(text).find(c => crypto.createHash('sha256').update(c.chunkText).digest('hex') === ref.contentHash);
+            const chunk = ref.historyExcerptLength ? crypto.createHash('sha256').update(text).digest('hex') === ref.documentHash
+              && crypto.createHash('sha256').update(text.slice(0, ref.historyExcerptLength)).digest('hex') === ref.contentHash ? { chunkText: text.slice(0, ref.historyExcerptLength) } : null
+              : chunkMarkdown(text).find(c => crypto.createHash('sha256').update(c.chunkText).digest('hex') === ref.contentHash);
             if (!chunk) continue;
             results.push({ scope_project_id: source.projectId, space_id: `project:${source.projectId}`, entry_id: ref.entryId, title: ref.title,
               chunk_text: chunk.chunkText, content_hash: ref.contentHash, commitSha: ref.commitSha });
@@ -89,14 +91,18 @@ class EngineContext {
       }
       if (sessionKey && !['followup', 'greeting'].includes(queryIntent(query)) && facts.length) {
         this.recentReferences.delete(sessionKey);
-        this.recentReferences.set(sessionKey, { at: Date.now(), refs: facts.filter(f => f.contentHash).map(f => ({ projectId: f.projectId, entryId: f.entryId, contentHash: f.contentHash, title: f.title, commitSha: f.commitSha })) });
+        this.recentReferences.set(sessionKey, { at: Date.now(), refs: facts.filter(f => f.contentHash).map(f => {
+          const row = knowledge.find(r => r.scope_project_id === f.projectId && r.entry_id === f.entryId && r.content_hash === f.contentHash);
+          return { projectId: f.projectId, entryId: f.entryId, contentHash: f.contentHash, title: f.title, commitSha: f.commitSha,
+            ...(row?.history_excerpt_length ? { historyExcerptLength: row.history_excerpt_length, documentHash: row.document_hash } : {}) };
+        }) });
         while (this.recentReferences.size > 100) this.recentReferences.delete(this.recentReferences.keys().next().value);
       }
       const prompt = facts.length || memories.length ? HEADER + encode(body) + FOOTER : '';
       const status = ['degraded', 'unavailable', 'partial'].includes(found.health?.index) ? 'file-fallback' : prompt ? 'ready' : 'empty';
       const result = { requestId, projectId: project.projectId, scope, client, status, project: projectInfo, intent: found.intent, rankingVersion, matchStatus: found.matchStatus,
         facts, memories, references: [...memories, ...facts], prompt, backend: found.backend, health: found.health, memoryStatus: pending.length > candidates.length ? 'pending' : candidates.length ? 'ready' : 'empty', truncated: { facts: knowledge.length - facts.length, memories: candidates.length - memories.length }, durationMs: Date.now() - started };
-      await this.log(status === 'file-fallback' ? 'warn' : 'info', 'knowledge.context.prepared', '开发前知识上下文已准备。', { projectId: project.projectId, operationId: requestId, phase: 'context', context: { client, status, scope, durationMs: result.durationMs, factCount: facts.length, memoryCount: memories.length, memoryStatus: result.memoryStatus, references: result.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha, memoryId: r.memoryId })), sessionHash: input.sessionId ? crypto.createHash('sha256').update(String(input.sessionId)).digest('hex') : null } });
+      await this.log(status === 'file-fallback' ? 'warn' : 'info', 'knowledge.context.prepared', '开发前知识上下文已准备。', { projectId: project.projectId, operationId: requestId, phase: 'context', context: { client, status, scope, rankingVersion, intent: found.intent, matchStatus: found.matchStatus, backend: found.backend, primaryFactCount: facts.filter(f => f.projectId === project.projectId).length, referenceFactCount: facts.filter(f => f.projectId !== project.projectId).length, durationMs: result.durationMs, factCount: facts.length, memoryCount: memories.length, memoryStatus: result.memoryStatus, references: result.references.map(r => ({ projectId: r.projectId, entryId: r.entryId, commitSha: r.commitSha, memoryId: r.memoryId })), sessionHash: input.sessionId ? crypto.createHash('sha256').update(String(input.sessionId)).digest('hex') : null } });
       return result;
     } catch (error) {
       await this.log('warn', 'knowledge.context.failed', '开发前知识读取未完成。', { projectId: project?.projectId, operationId: requestId, phase: 'context', context: { client, code: error.code || 'CONTEXT_FAILED', durationMs: Date.now() - started } });

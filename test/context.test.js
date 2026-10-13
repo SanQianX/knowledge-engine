@@ -139,3 +139,16 @@ test('follow-up references stay within the same project/session and are invalida
   fs.writeFileSync(path.join(f.store.getProject('project-a').knowledgePath, 'README.md'), '# Changed\n\nThe former schema no longer applies.\n');
   assert.equal((await f.context.prepare({ projectId: 'project-a', query: '展开说说', client: 'claude', sessionId: 'same' })).facts.length, 0);
 });
+
+test('a recent-progress follow-up reuses verified history, not unrelated semantic results', async t => {
+  const f = await fixture(t), changes = path.join(f.store.getProject('project-a').knowledgePath, 'changes');
+  fs.mkdirSync(changes, { recursive: true });
+  const file = path.join(changes, 'latest.md');
+  fs.writeFileSync(file, '# 最新导出更新\n\n当前已完成导出参数校验。\n');
+  const first = await f.context.prepare({ projectId: 'project-a', query: '最近一次开发修改了什么', client: 'claude', sessionId: 'history' });
+  assert.equal(first.intent, 'recent'); assert.ok(first.facts.some(fact => fact.entryId === 'changes/latest.md'));
+  const next = await f.context.prepare({ projectId: 'project-a', query: '展开说说', client: 'claude', sessionId: 'history' });
+  assert.ok(next.facts.some(fact => fact.entryId === 'changes/latest.md'));
+  fs.appendFileSync(file, '\n更新后的知识不得复用旧摘要。');
+  assert.equal((await f.context.prepare({ projectId: 'project-a', query: '展开说说', client: 'claude', sessionId: 'history' })).facts.length, 0);
+});

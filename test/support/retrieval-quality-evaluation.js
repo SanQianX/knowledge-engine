@@ -17,11 +17,11 @@ function metrics(rows) {
     mrrAt5: positive.reduce((sum, r) => sum + (r.rank > 0 ? 1 / r.rank : 0), 0) / Math.max(1, positive.length), noAnswerAccuracy: negative.filter(r => !r.results.length).length / Math.max(1, negative.length) };
 }
 
-async function evaluate({ real = false, compare = true } = {}) {
+async function evaluate({ real = false, compare = true, baselineRef = 'c8c600e6674e96caa3663612a5a9fab31eefe9be' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retrieval-evaluation-'));
   const proof = path.resolve(__dirname, '../../.agent-state/acceptance/retrieval-quality'); fs.mkdirSync(proof, { recursive: true });
   const reportPath = path.join(proof, `${real ? 'real-vector' : 'lexical'}-${Date.now()}.json`);
-  const report = { schema: 'retrieval-quality/evaluation/v1', passed: false, mode: real ? 'synthetic labelled corpus + real embeddings' : 'deterministic current-file lexical retrieval', baselineCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' }).trim(), firstFailures: [], rows: [], startedAt: new Date().toISOString() };
+  const report = { schema: 'retrieval-quality/evaluation/v1', passed: false, mode: real ? 'synthetic labelled corpus + real embeddings' : 'deterministic current-file lexical retrieval', baselineCommit: baselineRef, currentCommit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8' }).trim(), firstFailures: [], rows: [], startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(reportPath, report);
   let server, hub;
   const scoreTraces = new Map();
@@ -57,7 +57,7 @@ async function evaluate({ real = false, compare = true } = {}) {
     const current = new EngineRetrieval(options);
     const variants = [['current', current]];
     if (compare) {
-      const source = execFileSync('git', ['show', 'HEAD:src/retrieval.js'], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', maxBuffer: 1024 * 1024 });
+      const source = execFileSync('git', ['show', `${baselineRef}:src/retrieval.js`], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', maxBuffer: 1024 * 1024 });
       const baseline = new Module(path.resolve(__dirname, '../../src/baseline-retrieval.js'), module);
       baseline.filename = path.resolve(__dirname, '../../src/baseline-retrieval.js'); baseline.paths = Module._nodeModulePaths(path.dirname(baseline.filename)); baseline._compile(source, baseline.filename);
       variants.unshift(['baseline', new baseline.exports.EngineRetrieval(options)]);

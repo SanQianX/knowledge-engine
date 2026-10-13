@@ -16,6 +16,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     const registrationBefore = this.store.getProject(project.projectId);
     const scopeStamp = p => JSON.stringify(p && [p.repoPath, p.knowledgePath, p.brainId, p.domainId, p.enabled]);
     const stamp = scopeStamp(registrationBefore);
+    const stamps = new Map(scopes.map(scope => [scope.projectId, scopeStamp(this.store.getProject(scope.projectId) || this.store.state.sharedScopes.find(s => s.id === scope.projectId))]));
     const scanned = this.scanCurrent(scopes), health = { index: 'unknown', scopes: scanned.scopeHealth };
     const bodies = new Map();
     for (const [id, c] of scanned.candidates) {
@@ -23,7 +24,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       try {
         if (!bodies.has(key)) bodies.set(key, ranking.bodyText(fs.readFileSync(path.join(c.knowledgePath, c.entryId), 'utf8')));
         const body = bodies.get(key), start = body.indexOf(c.chunkText);
-        c.bodyHash = ranking.bodyHash(body); c.startPos = start; c.endPos = start < 0 ? -1 : start + c.chunkText.length;
+        c.bodyHash = ranking.bodyHash(body); c.bodyLength = body.length; c.startPos = start; c.endPos = start < 0 ? -1 : start + c.chunkText.length;
       } catch { scanned.candidates.delete(id); }
     }
     if (!['greeting', 'followup'].includes(ranking.intent(signals.indexQuery))) await this.recallIndex(scopes, signals.indexQuery, scanned.candidates, health);
@@ -31,6 +32,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     if (stamp !== scopeStamp(this.store.getProject(project.projectId))) throw new DomainError('PROJECT_SCOPE_CHANGED', '项目归属或绑定已变化，请重新检索。', { status: 409 });
     const checked = new Map();
     for (const [id, c] of scanned.candidates) {
+      if (stamps.get(c.projectId) !== scopeStamp(this.store.getProject(c.projectId) || this.store.state.sharedScopes.find(s => s.id === c.projectId))) { scanned.candidates.delete(id); continue; }
       const key = `${c.spaceId}:${c.entryId}`;
       if (!checked.has(key)) {
         try {
@@ -145,7 +147,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
         for (const candidate of current.values()) {
           if (candidate.spaceId === mapping.scope.spaceId && candidate.entryId === entry) {
             const valid = row.scoreType === 'cosine' && row.bodyHash === candidate.bodyHash && Number.isInteger(row.startPos) && Number.isInteger(row.endPos)
-              && row.startPos >= 0 && row.endPos > row.startPos && candidate.startPos >= 0;
+              && row.startPos >= 0 && row.endPos > row.startPos && row.endPos <= candidate.bodyLength && candidate.startPos >= 0;
             const overlap = valid ? Math.max(0, Math.min(candidate.endPos, row.endPos) - Math.max(candidate.startPos, row.startPos)) : 0;
             if (!overlap) continue;
             const value = Number(row.score);
@@ -162,6 +164,8 @@ class EngineRetrieval extends KnowledgeRetrievalService {
         }
       }
       health.index = payload.projectsSkipped?.length ? 'partial' : 'ok';
+      health.verifiedVectorChunks = [...current.values()].filter(c => c.vectorVerified).length;
+      health.vectorMode = payload.resultLevel === 'chunk' ? 'verified-chunks' : 'legacy-document-results';
     } catch { health.index = 'degraded'; health.reason = 'vector-hub-unavailable'; }
   }
   async search(input = {}) {
@@ -189,6 +193,9 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       scopes.push(...this.sharedScopes(registration, 'domain').filter(s => s.reason === 'brain').map(s => ({ ...s, memoryOnly: true })));
     }
     const result = await super.search({ ...input, project, scopes });
+    const vectorUsed = result.results.some(row => row.match_channels.includes('index:vector-hub'));
+    result.retrievalModes = vectorUsed ? ['lexical', 'vector'] : ['lexical'];
+    result.backend = vectorUsed ? 'hybrid+markdown-truth' : 'markdown-hybrid-fallback';
     result.intent = selectedIntent; result.rankingVersion = ranking.VERSION;
     result.matchStatus = result.results.length ? 'matched' : ranking.intent(input.query) === 'greeting' ? 'not-needed' : 'no-reliable-match';
     const primaryCount = result.results.filter(r => r.scope_project_id === registration.projectId && !r.entry_id.startsWith('memories/')).length;
@@ -201,7 +208,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       const memory = source?.kind === 'brain' && row.entry_id.startsWith('memories/') ? this.memories.memoryForChunk(source, row.entry_id, row.heading_path) : null;
       const commitSha = memory ? memory.evidence?.commitSha || null : run?.commitSha || null;
       return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha,
-        matchReason: row.match_channels.includes('exact-commit') ? '提交标识匹配' : row.match_channels.some(c => c.startsWith('exact-source-file:')) ? '源文件匹配' : row.match_channels.includes('index:vector-hub') ? '正文关键词与向量片段融合' : '当前正文词法匹配',
+        matchReason: row.match_channels.includes('exact-commit') ? '提交标识匹配' : row.match_channels.some(c => c.startsWith('exact-source-file:')) ? '源文件匹配' : row.match_channels.includes('index:vector-hub') ? row.match_channels.includes('lexical:bm25') ? '正文关键词与向量片段融合' : '已校验向量片段匹配' : '当前正文词法匹配',
         ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id, ...(memory.sourceType === 'manual' ? { memorySourceType: 'manual' } : {}) } : {}) };
     });
     const slots = result.results.map((r, i) => r.memoryId ? i : -1).filter(i => i >= 0);
@@ -212,7 +219,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
   async ask(input) {
     const result = await this.search(input);
     const citations = result.results.slice(0, 5).map((r, i) => ({ index: i + 1, ref: i + 1, projectId: r.scope_project_id, projectName: r.projectName, spaceId: r.space_id, commitSha: r.commitSha, score: r.relevance_score, entryId: r.entry_id, path: r.entry_id, title: r.title, text: r.chunk_text }));
-    return { ...result, answer: citations.length ? citations.map(r => `${r.index}. ${r.title}: ${r.text}`).join('\n') : '知识库中没有找到相关内容。', citations };
+    return { ...result, answer: citations.length ? citations.map(r => `${r.index}. ${r.title}: ${r.text}`).join('\n') : result.matchStatus === 'not-needed' ? '本次输入无需知识检索。' : result.currentProjectStatus?.note || '没有可靠匹配；这不代表知识库为空。', citations };
   }
   async get(input) {
     const registration = this.resolve(input);
@@ -237,7 +244,10 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       const declared = /(?:^|\n)(?:-\s*)?(?:date|日期|时间):\s*([0-9T:+.Z-]+)/i.exec(content)?.[1];
       const timestamp = run?.evidence?.commitDate || run?.commitDate || declared || run?.promotedAt;
       const valid = timestamp && Number.isFinite(Date.parse(timestamp));
-      return { entry_id: entry, title: (/^#\s+(.+)$/m.exec(content) || [null, path.basename(file)])[1], chunk_text: content.slice(0, 1200), sourceText: content,
+      const excerpt = content.slice(0, 1200);
+      return { entry_id: entry, title: (/^#\s+(.+)$/m.exec(content) || [null, path.basename(file)])[1], chunk_text: excerpt, sourceText: content,
+        content_hash: crypto.createHash('sha256').update(excerpt).digest('hex'), history_excerpt_length: excerpt.length,
+        document_hash: crypto.createHash('sha256').update(content).digest('hex'),
         commitSha: run?.commitSha || /(?:^|\n)(?:-\s*)?commit:\s*`?([a-f0-9]{40})/i.exec(content)?.[1] || null,
         updated_at: valid ? new Date(timestamp).toISOString() : fs.statSync(file).mtime.toISOString(), dateSource: valid ? run?.promotedAt === timestamp ? 'promotion' : 'commit-evidence' : 'mtime-fallback' };
     }).filter(row => !namedFiles.length || namedFiles.some(name => mentionsFile({ entryId: row.entry_id, title: row.title, chunkText: row.sourceText }, name)))

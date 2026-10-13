@@ -54,6 +54,9 @@ test('greetings and unsupported broad questions do not fill results with random 
   const absent = await f.retrieval.search({ projectId: 'project-recipe', query: '量子纠缠计算机的天气预报算法' });
   assert.equal(absent.results.length, 0, 'unverified semantic scores do not prove relevance');
   assert.equal(absent.matchStatus, 'no-reliable-match');
+  assert.equal(absent.backend, 'markdown-hybrid-fallback', 'an online service without verified vector hits is not hybrid success');
+  const answer = await f.retrieval.ask({ projectId: 'project-recipe', query: '量子纠缠计算机的天气预报算法' });
+  assert.match(answer.answer, /不代表知识为空/);
 });
 
 test('a long document contributes at most two complementary snippets, not every heading', async t => {
@@ -74,13 +77,13 @@ test('explicit project/domain scope remains inclusive but never leaks other-doma
 test('chunk mode validates body hash and only credits the matching range; stale vectors never select unrelated text', async t => {
   const text = '# 两种功能\n\n## 配方保存\n\nPlate 保存必须校验 dirty 状态。\n\n## 网络连接\n\nTCP 心跳连接超时。\n';
   const f = await fixture(t, { 'project-recipe': { 'modules/editor.md': text } });
-  let stale = false;
+  let stale = false, invalidRange = false;
   const vector = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     assert.equal(url.searchParams.get('resultLevel'), 'chunk');
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ resultLevel: 'chunk', model: 'mock', results: [{ project: 'project-recipe', uri: 'modules/editor.md', score: 0.95, scoreType: 'cosine',
-      startPos: text.indexOf('## 配方保存'), endPos: text.indexOf('## 网络连接'), bodyHash: stale ? 'bad-hash' : crypto.createHash('sha256').update(text).digest('hex') }] }));
+      startPos: text.indexOf('## 配方保存'), endPos: invalidRange ? text.length + 50 : text.indexOf('## 网络连接'), bodyHash: stale ? 'bad-hash' : crypto.createHash('sha256').update(text).digest('hex') }] }));
   });
   await new Promise(resolve => vector.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => vector.close(resolve)));
   f.retrieval.vectorUrl = `http://127.0.0.1:${vector.address().port}`;
@@ -91,4 +94,16 @@ test('chunk mode validates body hash and only credits the matching range; stale 
   stale = true;
   const s = await f.retrieval.search({ projectId: 'project-recipe', query: '量子天气', limit: 10 });
   assert.equal(s.results.length, 0);
+  stale = false; invalidRange = true;
+  const invalid = await f.retrieval.search({ projectId: 'project-recipe', query: 'Plate 保存 dirty' });
+  assert.ok(invalid.results.length); assert.ok(invalid.results.every(r => !r.match_channels.includes('index:vector-hub')));
+});
+
+test('in-flight retrieval rejects changed primary ownership and discards references moved out of the domain', async t => {
+  const f = await fixture(t, { 'project-recipe': { 'README.md': '# 导出\n\n配方导出校验。' }, 'project-review': { 'README.md': '# 导出\n\n报表导出校验。' } });
+  f.retrieval.recallIndex = async () => { f.projects[1].domainId = 'other-domain'; };
+  const changed = await f.retrieval.search({ projectId: 'project-recipe', scope: 'domain', query: '导出校验' });
+  assert.ok(changed.results.length); assert.ok(changed.results.every(r => r.scope_project_id === 'project-recipe'));
+  f.retrieval.recallIndex = async () => { f.projects[0].domainId = 'new-domain'; };
+  await assert.rejects(f.retrieval.search({ projectId: 'project-recipe', scope: 'domain', query: '导出校验' }), { code: 'PROJECT_SCOPE_CHANGED' });
 });

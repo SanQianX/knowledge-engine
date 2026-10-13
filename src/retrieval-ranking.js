@@ -10,8 +10,14 @@ const ALIASES = [
   ['cancel', '取消'], ['connection', '连接'], ['save', '保存'],
 ];
 const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('zh', { granularity: 'word' }) : null;
+const termCache = new Map();
 
 function terms(text) {
+  // Cache only tokenization by content hash, never selected facts or scope
+  // permissions. Canonical file and membership checks still run on every query.
+  const key = crypto.createHash('sha256').update(String(text || '')).digest('hex');
+  const prior = termCache.get(key);
+  if (prior) { termCache.delete(key); termCache.set(key, prior); return prior; }
   const source = String(text || '').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
   const words = segmenter ? [...segmenter.segment(source)].filter(s => s.isWordLike).map(s => s.segment) : source.match(/[\p{L}\p{N}_-]+/gu) || [];
   for (const token of source.match(/[a-z][a-z0-9_.\/-]+/g) || []) words.push(token);
@@ -24,7 +30,10 @@ function terms(text) {
     if (new RegExp(`\\b${english}\\b`, 'i').test(source)) main.push(chinese);
     if (source.includes(chinese)) main.push(english);
   }
-  return { main, grams };
+  const result = Object.freeze({ main: Object.freeze(main), grams: Object.freeze(grams) });
+  termCache.set(key, result);
+  while (termCache.size > 4096) termCache.delete(termCache.keys().next().value);
+  return result;
 }
 
 function bodyText(markdown) {
