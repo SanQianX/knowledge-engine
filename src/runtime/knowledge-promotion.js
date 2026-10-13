@@ -45,19 +45,65 @@ function decodeUtf8(buffer) {
   catch (error) { throw new DomainError('INVALID_ARGUMENT', 'Staged Markdown must be valid UTF-8.', { cause: error }); }
 }
 
+// A quoted sample is exempt only when the same sentence of the original
+// document names a concrete UI field or attribute context; a quoted marker
+// without that context is still unfinished prose, whatever it quotes.
+const UI_CONTEXT = /(?:<(?:input|textarea|select)\b|#[a-zA-Z][\w-]*|\b(?:input|textarea|select|field|form|dialog|ui|html|attribute)\b|属性|字段|输入|表单|对话框|界面|控件|提示|文案)/i;
+
+function sentenceAround(text, index) {
+  const delimiters = /[。！？；\n.!?;]/g;
+  let start = 0;
+  let end = text.length;
+  let match;
+  while ((match = delimiters.exec(text))) {
+    if (match.index < index) start = match.index + 1;
+    else { end = match.index; break; }
+  }
+  return { text: text.slice(start, end), start };
+}
+
+// Mask frontmatter, fenced blocks and inline code with spaces, keeping
+// length and newlines so each hit keeps its original offset for sentence
+// context; only real prose can carry a placeholder marker.
+function maskCoded(content) {
+  return content
+    .replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, block => block.replace(/[^\n]/g, ' '))
+    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*(?:\n|$)/gm, block => block.replace(/[^\n]/g, ' '))
+    .replace(/(`+)[^\n]*?\1/g, span => span.replace(/[^\n]/g, ' '));
+}
+
+function unfinishedPlaceholder(prose, source) {
+  const re = /\bplaceholder\b[ \t]*(=|[「"'“][^」"'”]*[」"'”])?/gi;
+  let match;
+  while ((match = re.exec(prose))) {
+    if (match[1] === '=') continue;
+    if (match[1]) {
+      const sample = match[1].slice(1, -1).trim();
+      if (!sample || /^[.．…]+$/.test(sample)) return match[0];
+      // Context must come from this very sentence, outside the quoted value,
+      // so neither an earlier twin hit nor the sample itself can vouch for it.
+      const sentence = sentenceAround(source, match.index);
+      const quoteOffset = match.index + match[0].length - match[1].length - sentence.start;
+      const context = sentence.text.slice(0, quoteOffset) + ' '.repeat(match[1].length) + sentence.text.slice(quoteOffset + match[1].length);
+      if (UI_CONTEXT.test(context)) continue;
+    }
+    return match[0];
+  }
+  return null;
+}
+
 function validateMarkdown(content, relativePath) {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(content)) {
     throw new DomainError('INVALID_ARGUMENT', `Staged Markdown contains disallowed control characters: ${relativePath}.`);
   }
   if (!content.trim() || !/^#\s+\S+/m.test(content)) throw new DomainError('INVALID_ARGUMENT', `Staged Markdown must contain a title: ${relativePath}.`);
-  // UI attributes and quoted source examples describe real changes; they are
-  // not unfinished prose. Still reject a document containing only a quoted
-  // unfinished marker, so fencing a placeholder cannot make it valid knowledge.
-  const marker = /(?:\[TODO:|\bTODO:\s|\bTBD\b|\bPLACEHOLDER\b(?!\s*=))/i;
-  const prose = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
-    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*(?:\n|$)/gm, '')
-    .replace(/(`+)[^\n]*?\1/g, '');
-  if (marker.test(prose) || !prose.replace(/^#{1,6}[ \t]+.*$/gm, '').trim() && marker.test(content)) {
+  // UI attributes and quoted source samples describe real changes; they are
+  // not unfinished prose. Quoted samples still need a UI context in the same
+  // sentence, so fencing a placeholder cannot make it valid knowledge.
+  const marker = /(?:\[TODO:|\bTODO:\s|\bTBD\b)/i;
+  const prose = maskCoded(content);
+  const bare = !prose.replace(/^#{1,6}[ \t]+.*$/gm, '').trim();
+  if (marker.test(prose) || unfinishedPlaceholder(prose, content) || bare && (marker.test(content) || unfinishedPlaceholder(content, content))) {
     throw new DomainError('INVALID_ARGUMENT', `Placeholder knowledge is not allowed: ${relativePath}.`);
   }
   const fences = content.match(/^```/gm) || [];
