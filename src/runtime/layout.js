@@ -5,7 +5,9 @@ const { DomainError, validateProjectId } = require('./contracts');
 
 function realpathWithMissingLeaf(value) {
   const absolute = path.resolve(value);
-  if (fs.existsSync(absolute)) return fs.realpathSync(absolute);
+  // Native canonicalization preserves junction/symlink boundaries without the
+  // JavaScript implementation's repeated ancestor stat calls on Windows.
+  if (fs.existsSync(absolute)) return (fs.realpathSync.native || fs.realpathSync)(absolute);
   const parent = path.dirname(absolute);
   return parent === absolute ? absolute : path.join(realpathWithMissingLeaf(parent), path.basename(absolute));
 }

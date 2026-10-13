@@ -68,7 +68,7 @@ async function main() {
         const texts = []; const walk = value => { if (typeof value === 'string') texts.push(value); else if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') Object.values(value).forEach(walk); }; walk(parsed.messages);
         const system = typeof parsed.system === 'string' ? parsed.system : (parsed.system || []).map(p => p.text || '').join('\n');
         const isTitleRequest = !parsed.tools?.length && system.includes('Generate a concise, sentence-case title (3-7 words)');
-        modelRequests.push({ number: modelRequests.length + 1, isTitleRequest, containsOwnMemory: [...texts, system].some(text => text.includes(marker) && text.includes(candidate.id) && text.includes('<knowledge_context>')), containsMemory: texts.some(text => text.includes(marker)) || JSON.stringify(parsed.system || '').includes(marker), containsTask: texts.some(text => text.includes(prompt)), model: parsed.model, maxTokens: parsed.max_tokens, toolCount: parsed.tools?.length || 0, roleSequence: parsed.messages?.map(m => m.role), systemPrefix: system.slice(0, 350), textPrefixes: texts.slice(0, 3).map(text => text.slice(0, 60)), bodyHash: crypto.createHash('sha256').update(body).digest('hex'), receivedAt: new Date().toISOString() });
+        modelRequests.push({ number: modelRequests.length + 1, isTitleRequest, containsOwnMemory: [...texts, system].some(text => text.includes(marker) && text.includes(candidate.id) && text.includes('<knowledge_context>')), containsFacts: [...texts, system].some(text => text.includes('<knowledge_context>') && /"facts":\[\{/.test(text) && text.includes('"role":"本项目事实"')), containsMemory: texts.some(text => text.includes(marker)) || JSON.stringify(parsed.system || '').includes(marker), containsTask: texts.some(text => text.includes(prompt)), model: parsed.model, maxTokens: parsed.max_tokens, toolCount: parsed.tools?.length || 0, roleSequence: parsed.messages?.map(m => m.role), systemPrefix: system.slice(0, 350), textPrefixes: texts.slice(0, 3).map(text => text.slice(0, 60)), bodyHash: crypto.createHash('sha256').update(body).digest('hex'), receivedAt: new Date().toISOString() });
       }
       const target = new URL(profile.baseUrl.replace(/\/$/, '') + req.url);
       const headers = { ...req.headers, host: target.host }; delete headers.connection;
@@ -92,6 +92,7 @@ async function main() {
     const firstDevelopment = modelRequests.find(request => request.containsTask && !request.isTitleRequest);
     assert.equal(firstDevelopment?.containsMemory, true, 'confirmed memory must arrive on the first development model request; only the explicitly identified native title generator is auxiliary');
     assert.equal(firstDevelopment.containsOwnMemory, true, 'the product memory ID and envelope must be present, not just an old marker in unrelated client history');
+    assert.equal(firstDevelopment.containsFacts, true, 'nonempty current-project facts must reach the first model request alongside memories');
     assert.ok(modelRequests.slice(0, modelRequests.indexOf(firstDevelopment)).every(request => request.isTitleRequest), 'never silently discard an unknown earlier model request');
     assert.ok(fs.existsSync(filename), 'native client must actually implement the plain task');
     const text = fs.readFileSync(filename, 'utf8'), module = { exports: {} };

@@ -33,7 +33,8 @@ async function main() {
     const edited = await api('/api/engine/memories/' + memory.id, { text: `本项目所有 JSON 导出对象都包含 memoryLabel 字段，其值固定为 ${marker}；错误文案使用简体中文。`, scopeType: 'project', scopeId: project.projectId, status: 'confirmed' }, 'PATCH');
     assert.equal(edited.memory.status, 'confirmed');
   }
-  const cli = (await api('/api/terminal/system/doctor')).agents.zcode.cli.path;
+  const doctor = await api('/api/terminal/system/doctor');
+  const cli = doctor.agents.zcode.cli.path;
   const root = fs.mkdtempSync(path.join(environment.root, 'native-zcode-'));
   const userConfiguration = process.argv.includes('--user-config'), homeDir = userConfiguration ? os.homedir() : root;
   const configFile = path.join(homeDir, '.zcode/cli/config.json');
@@ -54,7 +55,7 @@ async function main() {
     assert.equal(configFingerprint(JSON.parse(fs.readFileSync(configFile))), preservedConfigHash, 'model, env, third-party hooks and capture remain unchanged');
   } else { await manager.installCaptureZCode(); manager.installZCode(); }
   const output = path.join(root, 'result.json'), requests = [], events = [];
-  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: '0.16.9', marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), configuration: userConfiguration ? 'existing user configuration; native model selection overridden only for this task' : 'isolated control', backup, preservedConfigHash, projectId: project.projectId, startedAt: new Date().toISOString() };
+  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: doctor.agents.zcode.versionProbe?.version || null, marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), configuration: userConfiguration ? 'existing user configuration; native model selection overridden only for this task' : 'isolated control', backup, preservedConfigHash, projectId: project.projectId, startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const filename = path.join(project.workspacePath, 'export-zcode-' + crypto.randomUUID() + '.cjs');
   const prompt = `需求已确定，无需追问。请在当前项目实现 CommonJS 模块，只新增文件 ${JSON.stringify(filename)}。导出 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；非数组时抛出 Error。遵循已有接口约定，不要提交或修改其它文件，完成后简短说明。`;
@@ -64,7 +65,9 @@ async function main() {
     req.on('end', () => {
       let parsed = {}; try { parsed = JSON.parse(body); } catch {}
       const text = JSON.stringify({ messages: parsed.messages, system: parsed.system, input: parsed.input, instructions: parsed.instructions });
-      requests.push({ number: requests.length + 1, model: parsed.model, containsOwnMemory: text.includes('<knowledge_context>') && text.includes(marker) && text.includes(memory.id), containsKnowledge: text.includes('<knowledge_context>') && text.includes(project.projectId), toolCount: parsed.tools?.length || 0, bodyHash: crypto.createHash('sha256').update(body).digest('hex') });
+      const strings = []; const walk = value => { if (typeof value === 'string') strings.push(value); else if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') Object.values(value).forEach(walk); };
+      walk({ messages: parsed.messages, system: parsed.system, input: parsed.input, instructions: parsed.instructions });
+      requests.push({ number: requests.length + 1, model: parsed.model, containsOwnMemory: text.includes('<knowledge_context>') && text.includes(marker) && text.includes(memory.id), containsFacts: strings.some(value => value.includes('<knowledge_context>') && /"facts":\[\{/.test(value) && value.includes('"role":"本项目事实"')), containsKnowledge: text.includes('<knowledge_context>') && text.includes(project.projectId), toolCount: parsed.tools?.length || 0, bodyHash: crypto.createHash('sha256').update(body).digest('hex') });
       const target = new URL(profile.baseUrl.replace(/\/$/, '') + req.url), headers = { ...req.headers, host: target.host }; delete headers.connection;
       const upstream = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers }, response => { res.writeHead(response.statusCode, response.headers); response.pipe(res); });
       upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); }); res.on('close', () => upstream.destroy()); upstream.end(body);
@@ -98,6 +101,7 @@ async function main() {
     const result = events.find(e => ['turn.completed', 'turn.failed'].includes(e.type)); assert.equal(result?.type, 'turn.completed'); assert.equal(result.payload.resultType, 'success');
     assert.equal(requests[0]?.containsOwnMemory, true, 'first native development model request must receive indexed facts and product memory without a search reminder');
     assert.equal(requests[0].containsKnowledge, true);
+    assert.equal(requests[0].containsFacts, true, 'current-project facts, not only an envelope label, must arrive before development');
     const text = fs.readFileSync(filename, 'utf8'), module = { exports: {} }; vm.runInNewContext(text, { module, exports: module.exports }, { timeout: 1000 });
     const value = JSON.parse(module.exports.exportRecords([{ id: 2 }])); assert.equal(value.memoryLabel, marker); assert.deepEqual(value.records, [{ id: 2 }]); assert.throws(() => module.exports.exportRecords('bad'), error => /[\u4e00-\u9fff]/.test(error.message));
     const sessionHash = crypto.createHash('sha256').update(sessionId).digest('hex');
