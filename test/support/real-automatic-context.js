@@ -22,15 +22,20 @@ async function main() {
   const api = async (route, body, method) => { const response = await fetch(new URL(route, environment.url), { method: method || (body ? 'POST' : 'GET'), headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); const data = await response.json(); assert.ok(response.ok && data.ok !== false, `${route}: ${data.error?.code || data.error || response.status}`); return data; };
   const project = (await api('/api/projects/aggregated')).projects.find(p => p.projectId === 'project-real-a');
   const knownMemories = (await api('/api/engine/memories')).memories;
-  const ownedConfirmed = knownMemories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
-  const candidate = ownedConfirmed || knownMemories.find(m => m.status === 'candidate' && m.evidence.projectId === project.projectId);
-  assert.ok(candidate, 'evidenced candidate from real maintenance required');
+  const belongs = m => m.evidence?.projectId === project.projectId || m.sourceType === 'manual' && m.scopeType === 'project' && m.scopeId === project.projectId;
+  const ownedConfirmed = knownMemories.find(m => m.status === 'confirmed' && belongs(m) && m.text.includes('AUTOCTX-'));
+  // Maintenance without an explicit preference may legitimately produce no
+  // candidate. Test memory reading with a real user-confirmed manual record,
+  // never invent an Agent origin or require it to extract a preference from facts.
+  const candidate = ownedConfirmed || knownMemories.find(m => m.status === 'candidate' && belongs(m))
+    || (await api('/api/engine/memories', { text: '验收项目的错误文案使用简体中文。', scopeType: 'project', scopeId: project.projectId })).memory;
+  assert.ok(candidate, 'a persistent confirmed-memory fixture is required');
   const editMemory = process.argv.includes('--edit-memory');
   if (!editMemory) for (const previous of knownMemories.filter(m => m.id !== candidate.id && m.status === 'confirmed' && m.text.includes('AUTOCTX-'))) await api(`/api/engine/memories/${previous.id}`, { status: 'ignored' }, 'PATCH');
   const priorMarker = ownedConfirmed?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0];
   const marker = !editMemory && priorMarker || `AUTOCTX-${crypto.randomBytes(12).toString('hex')}`;
   const output = path.join(environment.root, `real-automatic-context-${Date.now()}.json`);
-  const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, marker, priorMarker, editedPreference: editMemory, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
+  const report = { passed: false, version: require(path.join(core, 'package.json')).version, installationSource: environment.installationSource, memorySource: candidate.sourceType || 'agent-candidate', marker, priorMarker, editedPreference: editMemory, projectId: project.projectId, cases: [], startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const edited = await api(`/api/engine/memories/${candidate.id}`, { text: `本项目所有 JSON 导出对象都包含 memoryLabel 字段，其值固定为 ${marker}；错误文案使用简体中文。`, scopeType: 'project', scopeId: project.projectId, status: 'confirmed' }, 'PATCH');
   assert.equal(edited.memory.status, 'confirmed');

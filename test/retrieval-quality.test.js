@@ -52,6 +52,17 @@ test('missing recent history is not reported as an empty project when other main
   assert.equal(result.currentProjectStatus.hasKnowledge, true); assert.match(result.currentProjectStatus.note, /不代表知识为空/);
 });
 
+test('a natural storage-location question finds storage rules without knowing the filename', async t => {
+  const f = await fixture(t, { 'project-recipe': {
+    'modules/vector-index-storage-root.md': '# 向量索引存储根：跟随知识根目录\n\n知识根目录非空时，向量索引保存到知识根目录下的 .indexes。实际存储位置需要读取系统状态，不能把历史文档当作这台电脑的当前配置。',
+    'modules/index-rebuild.md': '# 索引重建\n\n向量索引重建会按项目重新处理已有知识文件。重建失败可以重试，成功后恢复检索。',
+  }, 'project-review': { 'modules/storage.md': '# 报表存储位置\n\n检测报表保存在用户指定的输出目录。' } });
+  const result = await f.retrieval.search({ projectId: 'project-recipe', query: '我想知道我当前向量库存储的位置在哪', limit: 5 });
+  assert.equal(result.results[0]?.entry_id, 'modules/vector-index-storage-root.md');
+  assert.ok(result.results[0].chunk_text.includes('.indexes'));
+  assert.ok(result.results.every(r => r.scope_project_id === 'project-recipe'));
+});
+
 test('greetings and unsupported broad questions do not fill results with random vector hits', async t => {
   const f = await fixture(t, { 'project-recipe': { 'README.md': '# Plate\n\nPlate 编辑器用于制作检测配方。' } });
   let requests = 0;

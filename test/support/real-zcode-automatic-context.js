@@ -25,7 +25,7 @@ async function main() {
   const api = async (route, body, method) => { const r = await fetch(new URL(route, environment.url), { method: method || (body ? 'POST' : 'GET'), headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(20000) }); const d = await r.json(); assert.ok(r.ok && d.ok !== false, route + ': ' + (d.error?.code || r.status)); return d; };
   const projects = (await api('/api/projects/aggregated')).projects;
   const project = projects.find(p => p.projectId === 'project-real-a');
-  const memory = (await api('/api/engine/memories')).memories.find(m => m.status === 'confirmed' && m.evidence.projectId === project.projectId && m.text.includes('AUTOCTX-'));
+  const memory = (await api('/api/engine/memories')).memories.find(m => m.status === 'confirmed' && (m.evidence?.projectId === project.projectId || m.sourceType === 'manual' && m.scopeType === 'project' && m.scopeId === project.projectId) && m.text.includes('AUTOCTX-'));
   let marker = memory?.text.match(/AUTOCTX-[a-f0-9]{24}/)?.[0]; assert.ok(marker);
   const priorMarker = marker;
   if (process.argv.includes('--edit-memory')) {
@@ -55,7 +55,7 @@ async function main() {
     assert.equal(configFingerprint(JSON.parse(fs.readFileSync(configFile))), preservedConfigHash, 'model, env, third-party hooks and capture remain unchanged');
   } else { await manager.installCaptureZCode(); manager.installZCode(); }
   const output = path.join(root, 'result.json'), requests = [], events = [];
-  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: doctor.agents.zcode.versionProbe?.version || null, marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), configuration: userConfiguration ? 'existing user configuration; native model selection overridden only for this task' : 'isolated control', backup, preservedConfigHash, projectId: project.projectId, startedAt: new Date().toISOString() };
+  const report = { passed: false, installationSource: environment.installationSource, runtimeVersion: JSON.parse(fs.readFileSync(path.join(environment.runtimeRoots.shell, 'package.json'))).version, adapterVersion: JSON.parse(fs.readFileSync(path.join(core, 'package.json'))).version, adapterRoot: core, nativeVersion: doctor.agents.zcode.versionProbe?.version || null, memorySource: memory.sourceType || 'agent-candidate', marker, priorMarker, editedPreference: process.argv.includes('--edit-memory'), configuration: userConfiguration ? 'existing user configuration; native model selection overridden only for this task' : 'isolated control', backup, preservedConfigHash, projectId: project.projectId, startedAt: new Date().toISOString() };
   const save = () => AtomicFile.writeJsonAtomic(output, redactValue(report, { secrets: [profile.apiKey] })); save();
   const filename = path.join(project.workspacePath, 'export-zcode-' + crypto.randomUUID() + '.cjs');
   const prompt = `需求已确定，无需追问。请在当前项目实现 CommonJS 模块，只新增文件 ${JSON.stringify(filename)}。导出 exportRecords(records)，参数为数组时返回 JSON 字符串，其中 records 字段为传入数组；非数组时抛出 Error。遵循已有接口约定，不要提交或修改其它文件，完成后简短说明。`;
