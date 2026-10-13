@@ -1,0 +1,14 @@
+{
+  "schema": "retrieval-policy/v1",
+  "rankingVersion": "project-knowledge/ranking-v2",
+  "models": [
+    {
+      "model": "embo-01",
+      "dimensions": 1536,
+      "minScore": 0.5,
+      "calibration": "real-vector-1791886299549/train-families",
+      "trainingFalsePositiveRate": 0,
+      "trainingSemanticRecall": 0.8888888888888888
+    }
+  ]
+}

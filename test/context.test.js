@@ -111,3 +111,31 @@ test('the public HTTP context route resolves a Git worktree and never schedules 
     const result = await response.json(); assert.equal(response.status, 200); assert.equal(result.ok, true); assert.equal(result.projectId, 'project-worktree'); assert.equal(result.scope, 'project'); assert.equal(f.store.listRuns().length, 0);
   } finally { await app.close(); }
 });
+
+test('project facts have a reserved budget; unrelated domain floods cannot replace them', async t => {
+  const f = await fixture(t), project = f.store.getProject('project-a');
+  const base = { health: { index: 'ok' }, backend: 'hybrid+markdown-truth', matchStatus: 'matched', currentProjectStatus: { hasKnowledge: true } };
+  f.retrieval.search = async input => {
+    assert.equal(input.policy, 'project-first');
+    return { ...base, results: [
+      ...Array.from({ length: 15 }, (_, i) => ({ scope_project_id: 'project-domain', projectName: 'Other project', space_id: 'project:project-domain', entry_id: `${i}.md`, title: 'domain', chunk_text: '领域经验'.repeat(180) })),
+      { scope_project_id: project.projectId, projectName: project.name, space_id: `project:${project.projectId}`, entry_id: 'README.md', title: 'primary', chunk_text: 'Current project owns plate editor state.' },
+    ] };
+  };
+  const r = await f.context.prepare({ projectId: project.projectId, query: 'Maintain plate editor' });
+  assert.equal(r.facts[0].projectId, project.projectId); assert.equal(r.facts[0].role, '本项目事实');
+  assert.ok(r.facts.filter(fact => fact.projectId !== project.projectId).length < 4);
+  assert.ok(r.prompt.includes('Other project')); assert.ok(r.prompt.length <= 8000);
+});
+
+test('follow-up references stay within the same project/session and are invalidated by file changes', async t => {
+  const f = await fixture(t);
+  const first = await f.context.prepare({ projectId: 'project-a', query: 'Implement export', client: 'claude', sessionId: 'same' });
+  assert.ok(first.facts.length);
+  const next = await f.context.prepare({ projectId: 'project-a', query: '展开说说', client: 'claude', sessionId: 'same' });
+  assert.ok(next.facts.length); assert.equal(next.matchStatus, 'matched-followup');
+  const other = await f.context.prepare({ projectId: 'project-b', query: '展开说说', client: 'claude', sessionId: 'same' });
+  assert.equal(other.facts.length, 0);
+  fs.writeFileSync(path.join(f.store.getProject('project-a').knowledgePath, 'README.md'), '# Changed\n\nThe former schema no longer applies.\n');
+  assert.equal((await f.context.prepare({ projectId: 'project-a', query: '展开说说', client: 'claude', sessionId: 'same' })).facts.length, 0);
+});

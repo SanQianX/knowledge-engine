@@ -1,14 +1,58 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { KnowledgeRetrievalService } = require('./runtime/knowledge-retrieval-service');
-const { listMarkdownFiles, isExcludedKnowledgePath } = require('./runtime/markdown-knowledge-indexer');
+const { listMarkdownFiles, isExcludedKnowledgePath, CHUNKER_VERSION } = require('./runtime/markdown-knowledge-indexer');
 const { DomainError } = require('./runtime/contracts');
+const ranking = require('./retrieval-ranking');
 const fileNames = query => [...new Set((String(query).match(/[\p{L}\p{N}_./\\-]+\.(?:cjs|mjs|js|jsx|ts|tsx|py|cs|cpp|c|h|hpp|rs|go|html|css|scss|json|ya?ml|toml|md|txt|sh|ps1)\b/giu) || []).map(value => path.posix.basename(value.replace(/\\/g, '/')).toLowerCase()))].slice(0, 20);
 const mentionsFile = (candidate, name) => new RegExp(`(?<![\\p{L}\\p{N}_-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_.-])`, 'iu').test([candidate.entryId, candidate.title, candidate.chunkText, ...(candidate.metadata?.sourcePaths || [])].join('\n'));
 
 class EngineRetrieval extends KnowledgeRetrievalService {
-  constructor(options) { super(options); this.store = options.store; this.memories = options.memories; this.vectorUrl = options.vectorUrl || 'http://127.0.0.1:8787'; }
+  constructor(options) { super(options); this.store = options.store; this.memories = options.memories; this.vectorUrl = options.vectorUrl || 'http://127.0.0.1:8787'; this.retrievalPolicy = options.retrievalPolicy || require('./retrieval-policy.json'); }
+  async retrieve(input = {}) {
+    const project = this.project(input), scopes = input.scopes || this.scopes(project), signals = this.signalSet(input.signals);
+    const registrationBefore = this.store.getProject(project.projectId);
+    const scopeStamp = p => JSON.stringify(p && [p.repoPath, p.knowledgePath, p.brainId, p.domainId, p.enabled]);
+    const stamp = scopeStamp(registrationBefore);
+    const scanned = this.scanCurrent(scopes), health = { index: 'unknown', scopes: scanned.scopeHealth };
+    const bodies = new Map();
+    for (const [id, c] of scanned.candidates) {
+      const key = `${c.spaceId}:${c.entryId}`;
+      try {
+        if (!bodies.has(key)) bodies.set(key, ranking.bodyText(fs.readFileSync(path.join(c.knowledgePath, c.entryId), 'utf8')));
+        const body = bodies.get(key), start = body.indexOf(c.chunkText);
+        c.bodyHash = ranking.bodyHash(body); c.startPos = start; c.endPos = start < 0 ? -1 : start + c.chunkText.length;
+      } catch { scanned.candidates.delete(id); }
+    }
+    if (!['greeting', 'followup'].includes(ranking.intent(signals.indexQuery))) await this.recallIndex(scopes, signals.indexQuery, scanned.candidates, health);
+    else health.index = 'not-requested';
+    if (stamp !== scopeStamp(this.store.getProject(project.projectId))) throw new DomainError('PROJECT_SCOPE_CHANGED', '项目归属或绑定已变化，请重新检索。', { status: 409 });
+    const checked = new Map();
+    for (const [id, c] of scanned.candidates) {
+      const key = `${c.spaceId}:${c.entryId}`;
+      if (!checked.has(key)) {
+        try {
+          const file = path.join(c.knowledgePath, c.entryId);
+          const valid = this.layout.isPathInside(c.knowledgePath, file, { realpath: true }) && !fs.lstatSync(file).isSymbolicLink()
+            && crypto.createHash('sha256').update(`chunker:${CHUNKER_VERSION}\n${fs.readFileSync(file, 'utf8')}`).digest('hex') === c.documentHash;
+          checked.set(key, valid);
+        } catch { checked.set(key, false); }
+      }
+      if (!checked.get(key)) scanned.candidates.delete(id);
+      if (c.entryId.startsWith('memories/')) {
+        const shared = this.store.state.sharedScopes.find(s => s.id === c.projectId);
+        if (!this.memories?.readableEntry(shared, c.entryId, registrationBefore) || !this.memories.memoryForChunk(shared, c.entryId, c.headingPath)) scanned.candidates.delete(id);
+      }
+    }
+    const ranked = ['greeting', 'followup'].includes(ranking.intent(signals.indexQuery)) ? [] : ranking.rank([...scanned.candidates.values()], signals.indexQuery, c => {
+      const scored = this.score(c, signals);
+      return { ...scored, excluded: Boolean(signals.commitPrefixes?.length || c.knownFileQuery) && scored.score <= 0 };
+    });
+    const ordered = input.policy === 'project-first' ? [...ranked.filter(c => c.scopeReason === 'primary'), ...ranked.filter(c => c.scopeReason !== 'primary')] : ranked;
+    return { project, scopes, signals, health, candidates: ordered.slice(0, this.candidateLimit), totalCurrentChunks: scanned.candidates.size, intent: ranking.intent(signals.indexQuery) };
+  }
   signalSet(input = {}) {
     const signals = super.signalSet(input);
     const query = signals.indexQuery.trim().toLowerCase();
@@ -83,10 +127,14 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       url.searchParams.set('q', query);
       url.searchParams.set('projects', mappings.map(m => m.registration.vectorProjectId || m.scope.projectId).join(','));
       url.searchParams.set('maxResults', String(this.candidateLimit));
+      url.searchParams.set('resultLevel', 'chunk');
+      url.searchParams.set('perProjectLimit', '30');
       const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
       if (!response.ok) throw new Error('VECTOR_UNAVAILABLE');
       const payload = await response.json();
       if (payload.errors && payload.errors.length) throw new Error('VECTOR_QUERY_FAILED');
+      const calibrated = this.retrievalPolicy.rankingVersion === ranking.VERSION && this.retrievalPolicy.models?.find(p => p.model === payload.model && p.dimensions === payload.dimensions && Number.isFinite(p.minScore));
+      health.calibration = calibrated ? 'validated' : 'lexical-support-required';
       // Vectors only contribute a rank. Displayed text/hash always comes from
       // current canonical files, so deleted or stale index bodies cannot leak.
       for (const row of payload.results || []) {
@@ -96,8 +144,20 @@ class EngineRetrieval extends KnowledgeRetrievalService {
         const entry = path.isAbsolute(uri) ? path.relative(mapping.scope.knowledgePath, uri).replace(/\\/g, '/') : String(uri).replace(/\\/g, '/');
         for (const candidate of current.values()) {
           if (candidate.spaceId === mapping.scope.spaceId && candidate.entryId === entry) {
-            candidate.indexScore = Math.max(candidate.indexScore || 0, Math.max(0, Number(row.score) || 0));
-            candidate.indexChannels = ['vector-hub'];
+            const valid = row.scoreType === 'cosine' && row.bodyHash === candidate.bodyHash && Number.isInteger(row.startPos) && Number.isInteger(row.endPos)
+              && row.startPos >= 0 && row.endPos > row.startPos && candidate.startPos >= 0;
+            const overlap = valid ? Math.max(0, Math.min(candidate.endPos, row.endPos) - Math.max(candidate.startPos, row.startPos)) : 0;
+            if (!overlap) continue;
+            const value = Number(row.score);
+            if (!Number.isFinite(value) || value < -1 || value > 1) continue;
+            candidate.indexScore = Math.max(candidate.indexScore || 0, Math.max(0, value));
+            candidate.vectorRanges ||= [];
+            candidate.vectorRanges.push([Math.max(candidate.startPos, row.startPos), Math.min(candidate.endPos, row.endPos)]);
+            const ranges = [...candidate.vectorRanges].sort((a, b) => a[0] - b[0]);
+            let covered = 0, end = -1;
+            for (const range of ranges) { covered += Math.max(0, range[1] - Math.max(end, range[0])); end = Math.max(end, range[1]); }
+            if (covered >= candidate.chunkText.length * 0.5) { candidate.indexChannels = ['vector-hub']; candidate.vectorVerified = true; }
+            if (calibrated) { candidate.vectorCalibrated = true; candidate.vectorMinScore = calibrated.minScore; }
           }
         }
       }
@@ -106,6 +166,18 @@ class EngineRetrieval extends KnowledgeRetrievalService {
   }
   async search(input = {}) {
     const registration = this.resolve(input);
+    const selectedIntent = input.intent && input.intent !== 'auto' ? input.intent : ranking.intent(input.query);
+    if (input.intent !== undefined && !['auto', 'search', 'recent'].includes(input.intent)) throw new DomainError('INVALID_ARGUMENT', '检索意图无效。');
+    if (input.scope !== undefined && !['project', 'domain', 'brain'].includes(input.scope)) throw new DomainError('INVALID_ARGUMENT', '知识范围无效。');
+    const knownCommits = this.signalSet({ primaryTexts: [String(input.query || '')] }).commitPrefixes;
+    if (selectedIntent === 'recent' && !knownCommits?.length) {
+      const history = await this.history(input);
+      return { ...history, query: input.query, intent: 'recent', rankingVersion: ranking.VERSION, matchStatus: history.results.length ? 'matched' : 'knowledge-empty',
+        health: { index: 'not-requested' }, results: history.results.slice(0, Math.max(1, Math.min(30, Number(input.limit) || 8))).map((r, i) => ({ ...r,
+          record_id: `project:${registration.projectId}:${r.entry_id}:history`, space_id: `project:${registration.projectId}`, chunk_id: `${r.entry_id}:history`,
+          scope_project_id: registration.projectId, scope_reason: 'primary', projectId: registration.projectId, projectName: registration.name, path: r.entry_id,
+          snippet: r.chunk_text, relevance_score: 1 / (i + 1), score: 1 / (i + 1), match_channels: ['intent:recent', 'scope:primary'], matchReason: '当前项目已维护变更，按依据时间排序' })) };
+    }
     const project = this.project({ projectId: registration.projectId });
     let scopes = [{ projectId: project.projectId, spaceId: project.primarySpaceId, knowledgePath: project.knowledgePath, weight: 1, reason: 'primary' }];
     if (input.scope === 'domain' || input.scope === 'brain') {
@@ -117,12 +189,20 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       scopes.push(...this.sharedScopes(registration, 'domain').filter(s => s.reason === 'brain').map(s => ({ ...s, memoryOnly: true })));
     }
     const result = await super.search({ ...input, project, scopes });
+    result.intent = selectedIntent; result.rankingVersion = ranking.VERSION;
+    result.matchStatus = result.results.length ? 'matched' : ranking.intent(input.query) === 'greeting' ? 'not-needed' : 'no-reliable-match';
+    const primaryCount = result.results.filter(r => r.scope_project_id === registration.projectId && !r.entry_id.startsWith('memories/')).length;
+    const hasKnowledge = listMarkdownFiles(registration.knowledgePath).length > 0;
+    result.currentProjectStatus = { hasKnowledge, matchedCount: primaryCount,
+      note: primaryCount ? '已匹配当前项目知识。' : hasKnowledge ? '当前项目已有知识，本次问题未可靠命中；不代表知识为空。' : '当前项目尚无可读取的已维护知识。' };
     result.results = result.results.map(row => {
       const run = this.store.listRuns(row.scope_project_id).find(r => r.promotedAt && r.staging?.operations?.some(op => op.path === row.entry_id));
       const source = this.store.getProject(row.scope_project_id) || this.store.state.sharedScopes.find(s => s.id === row.scope_project_id);
       const memory = source?.kind === 'brain' && row.entry_id.startsWith('memories/') ? this.memories.memoryForChunk(source, row.entry_id, row.heading_path) : null;
       const commitSha = memory ? memory.evidence?.commitSha || null : run?.commitSha || null;
-      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha, ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id, ...(memory.sourceType === 'manual' ? { memorySourceType: 'manual' } : {}) } : {}) };
+      return { ...row, projectName: source?.name || row.scope_project_id, path: row.entry_id, snippet: row.chunk_text, score: row.relevance_score, projectId: row.scope_project_id, commitSha,
+        matchReason: row.match_channels.includes('exact-commit') ? '提交标识匹配' : row.match_channels.some(c => c.startsWith('exact-source-file:')) ? '源文件匹配' : row.match_channels.includes('index:vector-hub') ? '正文关键词与向量片段融合' : '当前正文词法匹配',
+        ...(memory ? { memoryScopeType: this.memories.scopeOf(memory).type, memoryScopeId: this.memories.scopeOf(memory).id, memoryId: memory.id, ...(memory.sourceType === 'manual' ? { memorySourceType: 'manual' } : {}) } : {}) };
     });
     const slots = result.results.map((r, i) => r.memoryId ? i : -1).filter(i => i >= 0);
     const ordered = slots.map(i => result.results[i]).sort((a, b) => ({ project: 0, domain: 1, global: 2 }[a.memoryScopeType] - { project: 0, domain: 1, global: 2 }[b.memoryScopeType]) || b.score - a.score);
@@ -149,10 +229,20 @@ class EngineRetrieval extends KnowledgeRetrievalService {
   }
   async history(input) {
     const project = this.resolve(input);
+    const namedFiles = fileNames(input.query || '');
     const results = listMarkdownFiles(project.knowledgePath).filter(file => this.layout.isPathInside(path.join(project.knowledgePath, 'changes'), file, { realpath: true })).map(file => {
       const content = fs.readFileSync(file, 'utf8');
-      return { entry_id: path.relative(project.knowledgePath, file).replace(/\\/g, '/'), title: (/^#\s+(.+)$/m.exec(content) || [null, path.basename(file)])[1], chunk_text: content.slice(0, 900), updated_at: fs.statSync(file).mtime.toISOString() };
-    }).sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, Math.min(100, Math.max(1, Number(input.limit) || 20)));
+      const entry = path.relative(project.knowledgePath, file).replace(/\\/g, '/');
+      const run = this.store.listRuns(project.projectId).find(r => r.promotedAt && r.staging?.operations?.some(op => op.path === entry));
+      const declared = /(?:^|\n)(?:-\s*)?(?:date|日期|时间):\s*([0-9T:+.Z-]+)/i.exec(content)?.[1];
+      const timestamp = run?.evidence?.commitDate || run?.commitDate || declared || run?.promotedAt;
+      const valid = timestamp && Number.isFinite(Date.parse(timestamp));
+      return { entry_id: entry, title: (/^#\s+(.+)$/m.exec(content) || [null, path.basename(file)])[1], chunk_text: content.slice(0, 1200), sourceText: content,
+        commitSha: run?.commitSha || /(?:^|\n)(?:-\s*)?commit:\s*`?([a-f0-9]{40})/i.exec(content)?.[1] || null,
+        updated_at: valid ? new Date(timestamp).toISOString() : fs.statSync(file).mtime.toISOString(), dateSource: valid ? run?.promotedAt === timestamp ? 'promotion' : 'commit-evidence' : 'mtime-fallback' };
+    }).filter(row => !namedFiles.length || namedFiles.some(name => mentionsFile({ entryId: row.entry_id, title: row.title, chunkText: row.sourceText }, name)))
+      .sort((a, b) => (a.dateSource === 'mtime-fallback' ? 1 : 0) - (b.dateSource === 'mtime-fallback' ? 1 : 0) || b.updated_at.localeCompare(a.updated_at))
+      .slice(0, Math.min(100, Math.max(1, Number(input.limit) || 20))).map(({ sourceText, ...row }) => row);
     return { ok: true, projectId: project.projectId, projectSlug: project.projectId, backend: 'markdown', source: 'markdown', results };
   }
 }

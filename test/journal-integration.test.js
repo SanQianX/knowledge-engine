@@ -97,7 +97,7 @@ test('real Git hooks → real project journals → durable engine → real vecto
     const sharedIndex = await manager.hub.search('保持功能简单', { projects: ['scope-brain-brain-default'] });
     assert.ok(sharedIndex.results.some(r => r.uri.endsWith(`${memory.scopeId}.md`) && r.snippet.includes('保持功能简单')), 'confirmed scoped memory reaches the real vector index');
     const sharedRecall = await runtime.coordinator.retrieval.search({ projectId: memory.scopeId, query: '保持功能简单', scope: 'brain' });
-    assert.ok(sharedRecall.results.some(r => r.space_id === 'brain:brain-default' && r.match_channels.includes('index:vector-hub')), 'shared scope participates in vector recall');
+    assert.ok(sharedRecall.results.some(r => r.space_id === 'brain:brain-default' && r.match_channels.includes('index:vector-hub')), 'shared scope participates in vector recall: ' + JSON.stringify({ health: sharedRecall.health, results: sharedRecall.results.map(r => ({ space: r.space_id, entry: r.entry_id, channels: r.match_channels })) }));
     await runtime.close();
     const restarted = createEngineServer({ dataDir, analyzer, consume: true, bridgeUrl: `http://127.0.0.1:${bridgeServer.address().port}`, vectorUrl: `http://127.0.0.1:${vectorServer.address().port}` });
     await restarted.ready;
