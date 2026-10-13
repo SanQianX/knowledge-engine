@@ -34,12 +34,22 @@ function snapshot(dataDir, core) {
     protectedFiles: protectedFiles.map(file => ({ file, sha256: hash(file) })),
     historyFiles: ['workbench/_ai', 'workbench/cli-sessions'].flatMap(relative => files(path.join(dataDir, relative))).map(file => ({ file, sha256: hash(file) })),
     journalCursors: state.journalCursors,
-    runs: state.runs.map(run => ({ runId: run.runId, projectId: run.projectId, commitSha: run.commitSha, state: run.state, indexState: run.indexState, promotedAt: run.promotedAt, analysisRunId: run.analysisRunId, indexAttempts: run.indexAttempts, knowledgeHashes: Object.fromEntries((run.staging?.operations || []).filter(op => op.operation !== 'delete').map(op => [op.path, hash(path.join(state.projects.find(project => project.projectId === run.projectId).knowledgePath, op.path))])) })),
+    runs: state.runs.map(run => ({ runId: run.runId, projectId: run.projectId, commitSha: run.commitSha, sequence: run.sequence, phase: run.phase, state: run.state, indexState: run.indexState, promotedAt: run.promotedAt, analysisRunId: run.analysisRunId, indexAttempts: run.indexAttempts, knowledgeHashes: Object.fromEntries((run.staging?.operations || []).filter(op => op.operation !== 'delete').map(op => [op.path, hash(path.join(state.projects.find(project => project.projectId === run.projectId).knowledgePath, op.path))])) })),
   };
 }
-function verify(before, after, { frozen = false } = {}) {
+function assertInactive(runs, allowBlocked = false) {
+  for (const run of runs) {
+    if (run.state === 'succeeded') continue;
+    assert.equal(allowBlocked, true, 'freeze an idle, fully indexed runtime before upgrade');
+    if (run.state === 'failed') continue;
+    assert.equal(run.state, 'queued', 'never interrupt active maintenance for an upgrade');
+    assert.equal(run.phase, 'waiting-previous', 'only a queue blocked by retained failure may be frozen');
+    assert.ok(runs.some(previous => previous.projectId === run.projectId && previous.state === 'failed' && previous.sequence < run.sequence), 'queued maintenance must have a failed predecessor');
+  }
+}
+function verify(before, after, { frozen = false, allowBlocked = false } = {}) {
   assert.equal(before.dataDir, after.dataDir);
-  if (frozen) assert.ok(before.runs.every(run => run.state === 'succeeded'), 'freeze an idle, fully indexed runtime before upgrade');
+  if (frozen) assertInactive(before.runs, allowBlocked);
   for (const project of before.projects) {
     const current = after.projects.find(item => item.projectId === project.projectId);
     assert.ok(current, 'existing project must not disappear');
@@ -57,7 +67,7 @@ function verify(before, after, { frozen = false } = {}) {
   for (const old of before.runs) {
     const current = after.runs.find(run => run.runId === old.runId && run.commitSha === old.commitSha);
     assert.ok(current, 'existing run history must remain');
-    if (frozen) for (const key of ['state', 'indexState', 'promotedAt', 'analysisRunId', 'indexAttempts']) assert.equal(current[key], old[key], `upgrade replayed completed maintenance: ${old.runId} ${key}`);
+    if (frozen) for (const key of ['state', 'indexState', 'promotedAt', 'analysisRunId', 'indexAttempts']) assert.equal(current[key], old[key], `upgrade ${old.state === 'succeeded' ? 'replayed completed maintenance' : 'replayed or discarded retained maintenance'}: ${old.runId} ${key}`);
   }
 }
 if (require.main === module) {
@@ -74,4 +84,4 @@ if (require.main === module) {
   }
   console.log(JSON.stringify({ mode, version: current.version, projects: current.projects.length, historyFiles: current.historyFiles.length, report }));
 }
-module.exports = { snapshot, verify };
+module.exports = { snapshot, verify, assertInactive };
