@@ -50,7 +50,16 @@ function validateMarkdown(content, relativePath) {
     throw new DomainError('INVALID_ARGUMENT', `Staged Markdown contains disallowed control characters: ${relativePath}.`);
   }
   if (!content.trim() || !/^#\s+\S+/m.test(content)) throw new DomainError('INVALID_ARGUMENT', `Staged Markdown must contain a title: ${relativePath}.`);
-  if (/(?:\[TODO:|\bTODO:\s|\bTBD\b|PLACEHOLDER)/i.test(content)) throw new DomainError('INVALID_ARGUMENT', `Placeholder knowledge is not allowed: ${relativePath}.`);
+  // UI attributes and quoted source examples describe real changes; they are
+  // not unfinished prose. Still reject a document containing only a quoted
+  // unfinished marker, so fencing a placeholder cannot make it valid knowledge.
+  const marker = /(?:\[TODO:|\bTODO:\s|\bTBD\b|\bPLACEHOLDER\b(?!\s*=))/i;
+  const prose = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '')
+    .replace(/^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^[ \t]*\1[ \t]*(?:\n|$)/gm, '')
+    .replace(/(`+)[^\n]*?\1/g, '');
+  if (marker.test(prose) || !prose.replace(/^#{1,6}[ \t]+.*$/gm, '').trim() && marker.test(content)) {
+    throw new DomainError('INVALID_ARGUMENT', `Placeholder knowledge is not allowed: ${relativePath}.`);
+  }
   const fences = content.match(/^```/gm) || [];
   if (fences.length % 2 !== 0) throw new DomainError('INVALID_ARGUMENT', `Markdown code fences are unbalanced: ${relativePath}.`);
   if (content.startsWith('---\n') && !/^---\n[\s\S]*?\n---\n/.test(content)) {
