@@ -181,7 +181,10 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     const knownCommits = this.signalSet({ primaryTexts: [String(input.query || '')] }).commitPrefixes;
     if (selectedIntent === 'recent' && !knownCommits?.length) {
       const history = await this.history(input);
-      return { ...history, query: input.query, intent: 'recent', rankingVersion: ranking.VERSION, matchStatus: history.results.length ? 'matched' : 'knowledge-empty',
+      const hasKnowledge = listMarkdownFiles(registration.knowledgePath).length > 0;
+      const currentProjectStatus = { hasKnowledge, matchedCount: history.results.length, note: history.results.length ? '已匹配当前项目的维护变更。' : hasKnowledge ? '本次没有匹配到当前项目的维护变更；已有知识仍然保留，不代表知识为空。' : '当前项目尚无可读取的已维护知识。' };
+      return { ...history, query: input.query, intent: 'recent', rankingVersion: ranking.VERSION, currentProjectStatus,
+        matchStatus: history.results.length ? 'matched' : hasKnowledge ? 'no-reliable-match' : 'knowledge-empty',
         health: { index: 'not-requested' }, results: history.results.slice(0, Math.max(1, Math.min(30, Number(input.limit) || 8))).map((r, i) => ({ ...r,
           record_id: `project:${registration.projectId}:${r.entry_id}:history`, space_id: `project:${registration.projectId}`, chunk_id: `${r.entry_id}:history`,
           scope_project_id: registration.projectId, scope_reason: 'primary', projectId: registration.projectId, projectName: registration.name, path: r.entry_id,

@@ -45,6 +45,13 @@ test('recent project progress selects maintained commit history, not domain sema
   assert.equal(history.results[0].entry_id, 'changes/ef123b6058ea.md');
 });
 
+test('missing recent history is not reported as an empty project when other maintained knowledge exists', async t => {
+  const f = await fixture(t, { 'project-recipe': { 'README.md': '# 项目背景\n\n已经保留的配方背景知识。' }, 'project-review': { 'changes/recent.md': '# 最近开发\n\n其他项目的报表改动。' } });
+  const result = await f.retrieval.search({ projectId: 'project-recipe', scope: 'domain', query: '最近一次开发的东西是什么' });
+  assert.equal(result.results.length, 0); assert.equal(result.matchStatus, 'no-reliable-match');
+  assert.equal(result.currentProjectStatus.hasKnowledge, true); assert.match(result.currentProjectStatus.note, /不代表知识为空/);
+});
+
 test('greetings and unsupported broad questions do not fill results with random vector hits', async t => {
   const f = await fixture(t, { 'project-recipe': { 'README.md': '# Plate\n\nPlate 编辑器用于制作检测配方。' } });
   let requests = 0;
