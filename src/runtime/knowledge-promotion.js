@@ -49,6 +49,25 @@ function decodeUtf8(buffer) {
 // document names a concrete UI field or attribute context; a quoted marker
 // without that context is still unfinished prose, whatever it quotes.
 const UI_CONTEXT = /(?:<(?:input|textarea|select)\b|#[a-zA-Z][\w-]*|\b(?:input|textarea|select|field|form|dialog|ui|html|attribute)\b|属性|字段|输入|表单|对话框|界面|控件|提示|文案)/i;
+const FACTUAL_TERM = /(?:事实|属性|校验|验证|描述|说明|区分|识别|判定|误判|放行|拒绝|豁免|术语|样例|示例|规则|正则|边界)/;
+// Full predicate inflections only (noun forms like "description" do not
+// vouch for an attribute by themselves).
+const FACTUAL_TERM_EN = /\b(?:describ(?:es?|ed|ing)|specif(?:ies|ied|ying)|defin(?:es?|ed|ing)|indicat(?:es?|ed|ing)|displa(?:ys?|yed|ying)|provid(?:es?|ed|ing)|show(?:s?|n|ing)|control(?:s?|led|ling)|explain(?:s?|ed|ing)|document(?:s?|ed|ing))\b/i;
+const INCOMPLETE_LATER = /(?:待补|待填|待定|待完成|待完善|后续补充|后续补齐|后续再说|尚未|还没|暂未|fill this in|later|\bpending\b|\bunfinished\b|\bnot\s+yet\b)/i;
+const EMPTY_SAMPLE = /[「"'“][ \t]*[.．…]*[ \t]*[」"'”]/;
+// An empty sample counts only inside this placeholder's own noun phrase:
+// right beside the term or behind a short qualifier such as 属性说明 or
+// "value is"; once a real predicate starts, later empty values belong to
+// other fields and must not veto this mention.
+const OWN_EMPTY_SAMPLE = new RegExp(
+  '^[ \\t]*(?:的[ \\t]*)?(?:默认值|属性|字段|输入|提示|文案|样例|样本|示例|说明|描述|值|attribute|value|sample|text|label)?'
+    + '[ \\t]*(?:说明|描述|样例|样本|示例|文案|值)?[ \\t]*(?:是|为|is|=|:|：)?[ \\t]*' + EMPTY_SAMPLE.source,
+  'i'
+);
+// A TBD mention passes only inside a complete factual predicate about the
+// marker machinery itself: an unchanged or nothing-beyond claim with real
+// text after the mention. Technical nouns alone never vouch for TBD.
+const TBD_COMPLETE_FACT = /(?:未改动|未调整|未变化|未修改|保持不变|保持原样|之外不再|不再有其它|没有其它)/;
 
 function sentenceAround(text, index) {
   const delimiters = /[。！？；\n.!?;]/g;
@@ -73,20 +92,55 @@ function maskCoded(content) {
 }
 
 function unfinishedPlaceholder(prose, source) {
-  const re = /\bplaceholder\b[ \t]*(=|[「"'“][^」"'”]*[」"'”])?/gi;
+  const re = /\bplaceholder\b[ \t]*(=|[「"'“][^」"'”]*[」"'”]|[「"'“])?/gi;
   let match;
   while ((match = re.exec(prose))) {
     if (match[1] === '=') continue;
+    // The same sentence governs the decision; inline code stays masked so it
+    // can lend neither context nor samples.
+    const sentence = sentenceAround(source, match.index);
+    const masked = maskCoded(sentence.text);
+    // An empty or ellipsis-only quoted sample is an unfinished hole only in
+    // this placeholder's own noun phrase: directly after the term or after
+    // a qualifier such as 属性说明 or "value is". Empty values owned by
+    // another field later in the sentence never veto the mention.
+    const rest = masked.slice(match.index - sentence.start + match[0].length).split(/[，,]/)[0];
+    if (OWN_EMPTY_SAMPLE.test(rest)) return match[0];
+    // A quote that opens right beside the placeholder yet never closes is an
+    // unfinished sample, not an attribute mention.
+    if (match[1] && match[1].length === 1) return match[0];
     if (match[1]) {
       const sample = match[1].slice(1, -1).trim();
       if (!sample || /^[.．…]+$/.test(sample)) return match[0];
       // Context must come from this very sentence, outside the quoted value,
       // so neither an earlier twin hit nor the sample itself can vouch for it.
-      const sentence = sentenceAround(source, match.index);
       const quoteOffset = match.index + match[0].length - match[1].length - sentence.start;
       const context = sentence.text.slice(0, quoteOffset) + ' '.repeat(match[1].length) + sentence.text.slice(quoteOffset + match[1].length);
       if (UI_CONTEXT.test(context)) continue;
+    } else {
+      // A bare term passes only as a factual description of the UI attribute:
+      // UI context in the raw sentence plus a factual predicate in the prose
+      // (Chinese verb or complete English description verb) with no
+      // to-be-filled wording.
+      if (UI_CONTEXT.test(sentence.text) && (FACTUAL_TERM.test(masked) || FACTUAL_TERM_EN.test(masked)) && !INCOMPLETE_LATER.test(masked)) continue;
     }
+    return match[0];
+  }
+  return null;
+}
+
+// TBD may be named only as the topic of a complete rule-list fact, never as
+// the predicate of a planning sentence. The completion predicate must sit in
+// the same comma clause after the mention: 、 enumerations stay inside the
+// clause, and a fact from a neighbouring clause never vouches for this TBD.
+function unfinishedTbd(prose, source) {
+  const re = /\bTBD\b/gi;
+  let match;
+  while ((match = re.exec(prose))) {
+    const sentence = sentenceAround(source, match.index);
+    const masked = maskCoded(sentence.text);
+    const clause = masked.slice(match.index - sentence.start + match[0].length).split(/[，,]/)[0];
+    if (TBD_COMPLETE_FACT.test(clause) && !INCOMPLETE_LATER.test(masked)) continue;
     return match[0];
   }
   return null;
@@ -100,10 +154,12 @@ function validateMarkdown(content, relativePath) {
   // UI attributes and quoted source samples describe real changes; they are
   // not unfinished prose. Quoted samples still need a UI context in the same
   // sentence, so fencing a placeholder cannot make it valid knowledge.
-  const marker = /(?:\[TODO:|\bTODO:\s|\bTBD\b)/i;
+  const hardMarker = /(?:\[TODO:|\bTODO:\s)/i;
+  const tbd = /\bTBD\b/i;
   const prose = maskCoded(content);
   const bare = !prose.replace(/^#{1,6}[ \t]+.*$/gm, '').trim();
-  if (marker.test(prose) || unfinishedPlaceholder(prose, content) || bare && (marker.test(content) || unfinishedPlaceholder(content, content))) {
+  if (hardMarker.test(prose) || unfinishedTbd(prose, content) || unfinishedPlaceholder(prose, content)
+    || bare && (hardMarker.test(content) || tbd.test(content) || unfinishedPlaceholder(content, content))) {
     throw new DomainError('INVALID_ARGUMENT', `Placeholder knowledge is not allowed: ${relativePath}.`);
   }
   const fences = content.match(/^```/gm) || [];
