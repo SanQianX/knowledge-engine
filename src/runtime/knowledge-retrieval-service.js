@@ -145,6 +145,8 @@ class KnowledgeRetrievalService {
             title,
             headingPath: chunk.headingPath,
             chunkText: chunk.chunkText,
+            chunkStart: Number.isInteger(chunk.startPos) ? chunk.startPos : null,
+            chunkEnd: Number.isInteger(chunk.endPos) ? chunk.endPos : null,
             documentHash,
             contentHash: documentSha256(chunk.chunkText),
             metadata,

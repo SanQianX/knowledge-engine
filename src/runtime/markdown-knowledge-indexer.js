@@ -1,8 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { sha256 } = require('./content-hash');
+const { bodyText } = require('../retrieval-ranking');
 
-const CHUNKER_VERSION = 1;
+// Version 2: fence-aware heading boundaries changed real chunk geometry (a
+// fenced '#' comment no longer splits a section), so version-1 lexical caches
+// must miss their sealed document hash and rebuild through the delta overlay.
+const CHUNKER_VERSION = 2;
 const DEFAULT_MAX_CHARS = 1200;
 const DEFAULT_OVERLAP_CHARS = 120;
 const EXCLUDED_DIRS = new Set(['.git', '_ai', '_backup', 'node_modules', 'dev-conversations']);
@@ -43,10 +47,12 @@ function parseKnowledgeMetadata(markdown) {
   };
 }
 
-function splitLongText(text, maxChars, overlapChars) {
-  const clean = String(text || '').trim();
+function splitLongText(text, maxChars, overlapChars, base = 0) {
+  const raw = String(text || '');
+  const clean = raw.trim();
   if (!clean) return [];
-  if (clean.length <= maxChars) return [clean];
+  const origin = base + (raw.length - raw.trimStart().length);
+  if (clean.length <= maxChars) return [{ text: clean, start: origin, end: origin + clean.length }];
   const parts = [];
   let start = 0;
   while (start < clean.length) {
@@ -56,51 +62,84 @@ function splitLongText(text, maxChars, overlapChars) {
       const boundary = Math.max(clean.lastIndexOf('\n\n', end), clean.lastIndexOf('。', end), clean.lastIndexOf('. ', end));
       if (boundary >= floor) end = boundary + 1;
     }
-    parts.push(clean.slice(start, end).trim());
+    const piece = clean.slice(start, end);
+    const trimmed = piece.trim();
+    if (trimmed) {
+      const lead = piece.length - piece.trimStart().length;
+      parts.push({ text: trimmed, start: origin + start + lead, end: origin + start + lead + trimmed.length });
+    }
     if (end >= clean.length) break;
     start = Math.max(start + 1, end - overlapChars);
   }
-  return parts.filter(Boolean);
+  return parts;
+}
+
+// Heading and fence parsing must stay identical to the slice heading scan in
+// retrieval.js so vector slices report the same heading paths as chunks.
+function lineFenceState(line, fence) {
+  const marker = /^([ \t]*)(`{3,}|~{3,})(.*)$/.exec(line);
+  if (!marker) return fence;
+  if (!fence) return marker[2];
+  if (fence[0] === marker[2][0] && marker[2].length >= fence.length && !marker[3].trim()) return null;
+  return fence;
+}
+
+function headingOf(line) {
+  const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+  return match ? { level: match[1].length, text: match[2].trim() } : null;
 }
 
 function chunkMarkdown(markdown, options = {}) {
   const maxChars = Number(options.maxChars || DEFAULT_MAX_CHARS);
   const overlapChars = Math.min(Number(options.overlapChars || DEFAULT_OVERLAP_CHARS), Math.floor(maxChars / 3));
-  const body = stripFrontmatter(markdown).replace(/\r\n/g, '\n');
+  const body = bodyText(markdown);
   const lines = body.split('\n');
   const headings = [];
   const sections = [];
   let buffer = [];
+  let bufferStart = 0;
   let sectionHeadings = [];
+  let fence = null;
 
   const flush = () => {
-    const text = buffer.join('\n').trim();
-    if (text) sections.push({ headingPath: [...sectionHeadings], text });
+    const text = buffer.join('\n');
+    const trimmed = text.trim();
+    if (trimmed) {
+      const lead = text.length - text.trimStart().length;
+      const trail = text.length - text.trimEnd().length;
+      sections.push({ headingPath: [...sectionHeadings], text: trimmed, start: bufferStart + lead, end: bufferStart + text.length - trail });
+    }
     buffer = [];
   };
 
+  let offset = 0;
   for (const line of lines) {
-    const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
-    if (match) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    fence = lineFenceState(line, fence);
+    // Only real headings outside code fences split sections; a fenced '#'
+    // comment is plain content.
+    const heading = fence ? null : headingOf(line);
+    if (heading) {
       flush();
-      const level = match[1].length;
-      headings.length = level - 1;
-      headings[level - 1] = match[2].trim();
+      headings.length = heading.level - 1;
+      headings[heading.level - 1] = heading.text;
       sectionHeadings = headings.filter(Boolean);
-      buffer.push(line);
-    } else {
-      buffer.push(line);
     }
+    if (!buffer.length) bufferStart = lineStart;
+    buffer.push(line);
   }
   flush();
 
   const chunks = [];
   for (const section of sections) {
-    for (const text of splitLongText(section.text, maxChars, overlapChars)) {
+    for (const part of splitLongText(section.text, maxChars, overlapChars, section.start)) {
       chunks.push({
         chunkOrder: chunks.length,
         headingPath: section.headingPath,
-        chunkText: text,
+        chunkText: part.text,
+        startPos: part.start,
+        endPos: part.end,
       });
     }
   }
@@ -227,6 +266,8 @@ module.exports = {
   MarkdownKnowledgeIndexer,
   CHUNKER_VERSION,
   chunkMarkdown,
+  lineFenceState,
+  headingOf,
   listMarkdownFiles,
   isExcludedKnowledgePath,
   isDerivedIndex,

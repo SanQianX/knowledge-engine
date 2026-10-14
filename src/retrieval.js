@@ -3,11 +3,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { KnowledgeRetrievalService } = require('./runtime/knowledge-retrieval-service');
-const { listMarkdownFiles, isExcludedKnowledgePath, CHUNKER_VERSION } = require('./runtime/markdown-knowledge-indexer');
+const { listMarkdownFiles, isExcludedKnowledgePath, CHUNKER_VERSION, lineFenceState, headingOf } = require('./runtime/markdown-knowledge-indexer');
 const { DomainError } = require('./runtime/contracts');
+const { sha256 } = require('./runtime/content-hash');
 const ranking = require('./retrieval-ranking');
 const fileNames = query => [...new Set((String(query).match(/[\p{L}\p{N}_./\\-]+\.(?:cjs|mjs|js|jsx|ts|tsx|py|cs|cpp|c|h|hpp|rs|go|html|css|scss|json|ya?ml|toml|md|txt|sh|ps1)\b/giu) || []).map(value => path.posix.basename(value.replace(/\\/g, '/')).toLowerCase()))].slice(0, 20);
 const mentionsFile = (candidate, name) => new RegExp(`(?<![\\p{L}\\p{N}_-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_.-])`, 'iu').test([candidate.entryId, candidate.title, candidate.chunkText, ...(candidate.metadata?.sourcePaths || [])].join('\n'));
+
+const headingPathAt = (body, pos) => {
+  const headings = [];
+  let fence = null;
+  let offset = 0;
+  for (const line of String(body).split('\n')) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    if (lineStart > pos) break;
+    fence = lineFenceState(line, fence);
+    if (fence) continue;
+    const heading = headingOf(line);
+    if (heading) { headings.length = heading.level - 1; headings[heading.level - 1] = heading.text; }
+  }
+  return headings.filter(Boolean);
+};
+const overlapOf = (aStart, aEnd, bStart, bEnd) => Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
 
 class EngineRetrieval extends KnowledgeRetrievalService {
   constructor(options) { super(options); this.store = options.store; this.memories = options.memories; this.vectorUrl = options.vectorUrl || 'http://127.0.0.1:8787'; this.retrievalPolicy = options.retrievalPolicy || require('./retrieval-policy.json'); }
@@ -23,11 +41,23 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       const key = `${c.spaceId}:${c.entryId}`;
       try {
         if (!bodies.has(key)) bodies.set(key, ranking.bodyText(fs.readFileSync(path.join(c.knowledgePath, c.entryId), 'utf8')));
-        const body = bodies.get(key), start = body.indexOf(c.chunkText);
-        c.bodyHash = ranking.bodyHash(body); c.bodyLength = body.length; c.startPos = start; c.endPos = start < 0 ? -1 : start + c.chunkText.length;
       } catch { scanned.candidates.delete(id); }
     }
-    if (!['greeting', 'followup'].includes(ranking.intent(signals.indexQuery))) await this.recallIndex(scopes, signals.indexQuery, scanned.candidates, health);
+    // The canonical chunker emits authoritative half-open offsets into the same
+    // body coordinate system. A position is accepted only when the current
+    // body still slices to the exact chunk text; anything else degrades to
+    // unpositioned instead of guessing by search.
+    for (const c of scanned.candidates.values()) {
+      const body = bodies.get(`${c.spaceId}:${c.entryId}`);
+      const positioned = Boolean(body) && Number.isInteger(c.chunkStart) && Number.isInteger(c.chunkEnd)
+        && c.chunkStart >= 0 && c.chunkEnd > c.chunkStart && c.chunkEnd <= body.length && body.slice(c.chunkStart, c.chunkEnd) === c.chunkText;
+      c.bodyHash = body ? ranking.bodyHash(body) : null;
+      c.bodyLength = body ? body.length : 0;
+      c.startPos = positioned ? c.chunkStart : -1;
+      c.endPos = positioned ? c.chunkEnd : -1;
+    }
+    const lexicalChunkCount = scanned.candidates.size;
+    if (!['greeting', 'followup'].includes(ranking.intent(signals.indexQuery))) await this.recallIndex(scopes, signals.indexQuery, scanned.candidates, health, bodies);
     else health.index = 'not-requested';
     if (stamp !== scopeStamp(this.store.getProject(project.projectId))) throw new DomainError('PROJECT_SCOPE_CHANGED', '项目归属或绑定已变化，请重新检索。', { status: 409 });
     for (const [id, c] of scanned.candidates) {
@@ -58,7 +88,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       if (checked.get(key)) candidates.push(c);
       if (candidates.length >= this.candidateLimit) break;
     }
-    return { project, scopes, signals, health, candidates, totalCurrentChunks: scanned.candidates.size, intent: ranking.intent(signals.indexQuery) };
+    return { project, scopes, signals, health, candidates, totalCurrentChunks: lexicalChunkCount, intent: ranking.intent(signals.indexQuery) };
   }
   signalSet(input = {}) {
     const signals = super.signalSet(input);
@@ -122,13 +152,21 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     result.scopeHealth.push(...extra.scopeHealth);
     return result;
   }
-  async recallIndex(scopes, query, current, health) {
+  async recallIndex(scopes, query, current, health, bodies) {
     if (!query) { health.index = 'unavailable'; return; }
     // File identifiers, like commit IDs, select current facts before semantic
     // ranking. A not-yet-known filename still permits analogous background.
     const named = fileNames(query), known = named.filter(name => [...current.values()].some(candidate => mentionsFile(candidate, name)));
     for (const candidate of current.values()) { candidate.knownFileQuery = known.length > 0; candidate.fileReferences = known.filter(name => mentionsFile(candidate, name)); }
     const mappings = scopes.map(s => ({ scope: s, registration: this.store.getProject(s.projectId) || (() => { const shared = this.store.state.sharedScopes.find(p => p.id === s.projectId); return shared ? { vectorProjectId: `scope-${shared.kind}-${shared.id}` } : null; })() })).filter(m => m.registration);
+    const recall = { rows: 0, merges: 0, slices: 0, rejected: {} };
+    const reject = reason => { recall.rejected[reason] = (recall.rejected[reason] || 0) + 1; };
+    const anchors = new Map();
+    for (const candidate of current.values()) {
+      const key = `${candidate.spaceId}:${candidate.entryId}`;
+      if (!anchors.has(key)) anchors.set(key, candidate);
+    }
+    const pending = [];
     try {
       const url = new URL('/api/search', this.vectorUrl);
       url.searchParams.set('q', query);
@@ -145,33 +183,90 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       // Vectors only contribute a rank. Displayed text/hash always comes from
       // current canonical files, so deleted or stale index bodies cannot leak.
       for (const row of payload.results || []) {
+        recall.rows += 1;
         const mapping = mappings.find(m => (m.registration.vectorProjectId || m.scope.projectId) === row.project);
-        if (!mapping) continue;
+        if (!mapping) { reject('unknown-project'); continue; }
         const uri = row.uri || row.documentUri || '';
         const entry = path.isAbsolute(uri) ? path.relative(mapping.scope.knowledgePath, uri).replace(/\\/g, '/') : String(uri).replace(/\\/g, '/');
+        const key = `${mapping.scope.spaceId}:${entry}`;
+        const anchor = anchors.get(key);
+        if (!anchor || !bodies || !bodies.has(key)) { reject('no-current-document'); continue; }
+        const valid = row.scoreType === 'cosine' && row.bodyHash === anchor.bodyHash && Number.isInteger(row.startPos) && Number.isInteger(row.endPos)
+          && row.startPos >= 0 && row.endPos > row.startPos && row.endPos <= anchor.bodyLength;
+        if (!valid) { reject(row.bodyHash === anchor.bodyHash ? 'invalid-range' : 'body-hash-mismatch'); continue; }
+        const value = Number(row.score);
+        if (!Number.isFinite(value) || value < -1 || value > 1) { reject('invalid-score'); continue; }
         for (const candidate of current.values()) {
-          if (candidate.spaceId === mapping.scope.spaceId && candidate.entryId === entry) {
-            const valid = row.scoreType === 'cosine' && row.bodyHash === candidate.bodyHash && Number.isInteger(row.startPos) && Number.isInteger(row.endPos)
-              && row.startPos >= 0 && row.endPos > row.startPos && row.endPos <= candidate.bodyLength && candidate.startPos >= 0;
-            const overlap = valid ? Math.max(0, Math.min(candidate.endPos, row.endPos) - Math.max(candidate.startPos, row.startPos)) : 0;
-            if (!overlap) continue;
-            const value = Number(row.score);
-            if (!Number.isFinite(value) || value < -1 || value > 1) continue;
-            candidate.indexScore = Math.max(candidate.indexScore || 0, Math.max(0, value));
-            candidate.vectorRanges ||= [];
-            candidate.vectorRanges.push([Math.max(candidate.startPos, row.startPos), Math.min(candidate.endPos, row.endPos)]);
-            const ranges = [...candidate.vectorRanges].sort((a, b) => a[0] - b[0]);
-            let covered = 0, end = -1;
-            for (const range of ranges) { covered += Math.max(0, range[1] - Math.max(end, range[0])); end = Math.max(end, range[1]); }
-            if (covered >= candidate.chunkText.length * 0.5) { candidate.indexChannels = ['vector-hub']; candidate.vectorVerified = true; }
-            if (calibrated) { candidate.vectorCalibrated = true; candidate.vectorMinScore = calibrated.minScore; }
-          }
+          if (candidate.fromVectorRange || candidate.spaceId !== mapping.scope.spaceId || candidate.entryId !== entry || candidate.startPos < 0) continue;
+          const overlap = Math.max(0, Math.min(candidate.endPos, row.endPos) - Math.max(candidate.startPos, row.startPos));
+          if (!overlap) continue;
+          recall.merges += 1;
+          candidate.indexScore = Math.max(candidate.indexScore || 0, Math.max(0, value));
+          candidate.vectorRanges ||= [];
+          candidate.vectorRanges.push([Math.max(candidate.startPos, row.startPos), Math.min(candidate.endPos, row.endPos)]);
+          const ranges = [...candidate.vectorRanges].sort((a, b) => a[0] - b[0]);
+          let covered = 0, end = -1;
+          for (const range of ranges) { covered += Math.max(0, range[1] - Math.max(end, range[0])); end = Math.max(end, range[1]); }
+          if (covered >= candidate.chunkText.length * 0.5) { candidate.indexChannels = ['vector-hub']; candidate.vectorVerified = true; }
+          if (calibrated) { candidate.vectorCalibrated = true; candidate.vectorMinScore = calibrated.minScore; }
         }
+        const sliceText = bodies.get(key).slice(row.startPos, row.endPos);
+        if (!sliceText.trim()) { reject('empty-slice'); continue; }
+        let duplicate = false;
+        for (const candidate of current.values()) {
+          if (!candidate.fromVectorRange || candidate.spaceId !== mapping.scope.spaceId || candidate.entryId !== entry) continue;
+          if (overlapOf(candidate.startPos, candidate.endPos, row.startPos, row.endPos) * 2 >= Math.min(candidate.endPos - candidate.startPos, row.endPos - row.startPos)) { duplicate = true; break; }
+        }
+        for (const prior of pending) {
+          if (prior.scope.spaceId !== mapping.scope.spaceId || prior.entry !== entry) continue;
+          if (overlapOf(prior.row.startPos, prior.row.endPos, row.startPos, row.endPos) * 2 >= Math.min(prior.row.endPos - prior.row.startPos, row.endPos - row.startPos)) { duplicate = true; break; }
+        }
+        if (duplicate) continue;
+        pending.push({ scope: mapping.scope, key, entry, anchor, row, sliceText, value, calibrated });
+      }
+      for (const p of pending) {
+        recall.slices += 1;
+        const recordId = `${p.scope.spaceId}:${p.entry}:vector:${p.row.startPos}-${p.row.endPos}`;
+        current.set(recordId, {
+          recordId,
+          spaceId: p.scope.spaceId,
+          projectId: p.scope.projectId,
+          scopeReason: p.scope.reason,
+          // A slice inherits the anchor candidate's own scope weight: a project
+          // memory keeps project weight even inside a lower-weight shared scope.
+          scopeWeight: p.anchor.scopeWeight,
+          fromVectorRange: true,
+          knowledgePath: p.scope.knowledgePath,
+          entryId: p.entry,
+          entryType: p.anchor.entryType,
+          chunkId: `${p.entry}:vector:${p.row.startPos}-${p.row.endPos}`,
+          chunkOrder: null,
+          title: p.anchor.title,
+          headingPath: headingPathAt(bodies.get(p.key), p.row.startPos),
+          chunkText: p.sliceText,
+          documentHash: p.anchor.documentHash,
+          contentHash: sha256(p.sliceText),
+          metadata: p.anchor.metadata,
+          fromOverlay: p.anchor.fromOverlay,
+          bodyHash: p.anchor.bodyHash,
+          bodyLength: p.anchor.bodyLength,
+          startPos: p.row.startPos,
+          endPos: p.row.endPos,
+          indexScore: Math.min(1, Math.max(0, p.value)),
+          indexChannels: ['vector-hub'],
+          vectorRanges: [[p.row.startPos, p.row.endPos]],
+          vectorVerified: true,
+          knownFileQuery: known.length > 0,
+          fileReferences: known.filter(name => mentionsFile({ entryId: p.entry, title: p.anchor.title, chunkText: p.sliceText, metadata: p.anchor.metadata }, name)),
+          ...(p.calibrated ? { vectorCalibrated: true, vectorMinScore: p.calibrated.minScore } : {}),
+        });
       }
       health.index = payload.projectsSkipped?.length ? 'partial' : 'ok';
-      health.verifiedVectorChunks = [...current.values()].filter(c => c.vectorVerified).length;
+      health.verifiedVectorChunks = [...current.values()].filter(c => c.vectorVerified && !c.fromVectorRange).length;
       health.vectorMode = payload.resultLevel === 'chunk' ? 'verified-chunks' : 'legacy-document-results';
     } catch { health.index = 'degraded'; health.reason = 'vector-hub-unavailable'; }
+    health.vectorRecall = recall;
+    health.verifiedVectorSlices = recall.slices;
   }
   async search(input = {}) {
     const registration = this.resolve(input);
