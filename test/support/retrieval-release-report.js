@@ -49,6 +49,10 @@ function sourceSuiteMatches(source, installation) {
 }
 
 function matchesInstallation(suite, installation) {
+  // An isolated client configuration cannot prove the user's real wiring.
+  // These two adapters explicitly offer --user-config; Codex does not.
+  if (isNewRelease(installation.version) && /-(?:claude|zcode)-real24$/.test(suite.label || '')
+    && (!Array.isArray(suite.command) || !suite.command.includes('--user-config'))) return false;
   if (suite.installIdentity) {
     const identity = suite.installIdentity;
     // Both sides must carry official verified provenance — the registry and

@@ -138,3 +138,44 @@ test('system-suite refuses a receipt that is not an official registry installati
     (error, out, err) => resolve({ error, out, err })));
   assert.ok(failure.error, 'a non-official receipt must abort the suite run');
 });
+
+// F1 red cases: the same official install receipt must not let an
+// isolated-control real24 run satisfy local native acceptance for clients
+// that have a --user-config mode. Mode comes from the recorded command.
+const USER_CONFIG_CLIENTS = {
+  'retrieval-rc6-claude-real24': ['test/support/real-automatic-context.js', '.agent-state/tmp/env/acceptance-environment.json'],
+  'retrieval-rc6-zcode-real24': ['test/support/real-zcode-automatic-context.js', '.agent-state/tmp/env/acceptance-environment.json'],
+};
+const stampNativeRun = (directory, label, at, receipt, scriptArgs, userConfig) => {
+  stamp(directory, label, at, { installIdentity: receipt, command: ['C:/Program Files/nodejs/node.exe', ...scriptArgs, ...(userConfig ? ['--user-config'] : []), '--commit'] });
+};
+
+test('F1 red: bound claude/zcode real24 without --user-config is isolated control and must not satisfy native acceptance', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-release-userconfig-red-'));
+  const receipt = { registry: 'https://registry.npmjs.org/', integrityPassed: true, version: '5.0.16-rc.1', distIntegrity: INTEGRITY, sourceCommit: ROOT_COMMIT };
+  for (const [label, scriptArgs] of Object.entries(USER_CONFIG_CLIENTS)) stampNativeRun(directory, label, 10, receipt, scriptArgs, false);
+  const report = buildReport({ installation: installation(), prefix: 'retrieval-rc6', bindReceipt: true, directory });
+  for (const label of Object.keys(USER_CONFIG_CLIENTS)) {
+    const gate = find(report, label);
+    assert.equal(gate.passed, false, label + ' without --user-config never counts as existing-user integration');
+    assert.notEqual(gate.status, 'passed');
+  }
+});
+
+test('F1 spec: the same official receipt counts for claude/zcode real24 once the command carries --user-config', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-release-userconfig-green-'));
+  const receipt = { registry: 'https://registry.npmjs.org/', integrityPassed: true, version: '5.0.16-rc.1', distIntegrity: INTEGRITY, sourceCommit: ROOT_COMMIT };
+  for (const [label, scriptArgs] of Object.entries(USER_CONFIG_CLIENTS)) stampNativeRun(directory, label, 20, receipt, scriptArgs, true);
+  const report = buildReport({ installation: installation(), prefix: 'retrieval-rc6', bindReceipt: true, directory });
+  for (const label of Object.keys(USER_CONFIG_CLIENTS)) assert.equal(find(report, label).passed, true, label + ' with --user-config is valid user-integration evidence');
+});
+
+test('F1 boundary: codex and opencode real24 never require a --user-config parameter', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-release-userconfig-boundary-'));
+  const receipt = { registry: 'https://registry.npmjs.org/', integrityPassed: true, version: '5.0.16-rc.1', distIntegrity: INTEGRITY, sourceCommit: ROOT_COMMIT };
+  stampNativeRun(directory, 'retrieval-rc6-codex-real24', 30, receipt, ['test/support/real-codex-automatic-context.js', '.agent-state/tmp/env/acceptance-environment.json'], false);
+  stamp(directory, 'retrieval-rc6-opencode-real24', 40, { installIdentity: receipt, command: ['C:/Program Files/nodejs/node.exe', 'test/support/real-client-knowledge.js', '.agent-state/tmp/env/acceptance-environment.json', '--agent', 'opencode', '--auth', 'profile-injected'] });
+  const report = buildReport({ installation: installation(), prefix: 'retrieval-rc6', bindReceipt: true, directory });
+  assert.equal(find(report, 'retrieval-rc6-codex-real24').passed, true, 'codex acceptance runs through reviewed user hooks and has no --user-config flag');
+  assert.equal(find(report, 'retrieval-rc6-opencode-real24').passed, true, 'opencode is covered on the knowledge-tool surface only; its boundary stays unchanged');
+});
