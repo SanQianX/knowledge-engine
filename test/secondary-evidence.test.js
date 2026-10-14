@@ -31,3 +31,24 @@ test('secondary acceptance validates actual knowledge origins, not an unrelated 
   bad = sample(); bad.entry.projectId = 'project-b'; assert.throws(() => verifySecondaryEvidence(bad));
   bad = sample(); bad.events.at(-1).result = 'SECONDARY_POLICY_OK'; assert.throws(() => verifySecondaryEvidence(bad), /final answer/);
 });
+
+test('real model Chinese citation labels parse like English ones', () => {
+  const sha = '6d195ab0b282adf239aafe751b83bb0716864a65', entryId = 'changes/6d195ab0b282.md';
+  const originalFailingSource = `// 依据知识条目 changes/6d195ab0b282.md 原文：
+// "Knowledge has one writer: the engine promotion path."
+// 该事实来自提交 ${sha}。`;
+  const positives = [
+    originalFailingSource,
+    `// ${entryId} 提交：${sha}`,
+    `// ${entryId} 提交： ${sha}`,
+    `// ${entryId} 提交SHA：${sha}`,
+    `// ${entryId} 提交SHA: ${sha}`,
+    `// ${entryId} 提交sha=${sha}`,
+  ];
+  for (const source of positives) {
+    assert.deepEqual(citedEntry(source), { entryId, commitSha: sha });
+  }
+  assert.throws(() => citedEntry(`// ${entryId} 提交 ${sha.slice(0, 12)}`), /full commit/);
+  assert.throws(() => citedEntry(`// ${entryId} 散落的 SHA ${sha} 没有提交标签`), /full commit/);
+  assert.throws(() => citedEntry(`// changes/../../secret.md 提交 ${sha}`), /escape/);
+});
