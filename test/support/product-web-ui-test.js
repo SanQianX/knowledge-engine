@@ -12,13 +12,14 @@ const proof = path.resolve(__dirname, `../../.agent-state/acceptance/${process.e
 const environmentFile = path.join(root, 'acceptance-environment.json');
 const git = (repo, args) => execFileSync('git', args, { cwd: repo, windowsHide: true, encoding: 'utf8' }).trim();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const profileFaultEnabled = process.env.KB_ACCEPTANCE_PROFILE_TRANSIENT === '1';
 
 async function main() {
   const child = spawn(process.execPath, [path.join(__dirname, 'product-preview.js')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
     ...process.env, KB_PRODUCT_TEST_ROOT: root, KB_PRODUCT_TEST_PORT: '0', KB_ACCEPTANCE_REAL_PROFILE_ID: '', KB_ACCEPTANCE_REAL_EMBEDDING: '0', KB_ACCEPTANCE_STREAM_DELAY_MS: '1800', KB_ACCEPTANCE_DISTINCT_MEMORIES: '1', KB_ACCEPTANCE_TITLELESS_OUTPUT: '1', KB_ACCEPTANCE_INVALID_MEMORY_CANDIDATE: '1',
   } });
   let tail = ''; child.stdout.on('data', data => { tail = (tail + data).slice(-6000); }); child.stderr.on('data', data => { tail = (tail + data).slice(-6000); });
-  let browser, environment;
+  let browser, environment, failed = false;
   try {
     await waitFor(() => {
       if (child.exitCode !== null) throw Object.assign(new Error(`Fixture exited: ${tail}`), { fatal: true });
@@ -29,6 +30,22 @@ async function main() {
       const response = await fetch(environment.url + route, { method: method || (body ? 'POST' : 'GET'), headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(10000) });
       const payload = await response.json(); assert.ok(response.ok, `${route}: ${JSON.stringify(payload)}`); return payload;
     };
+    const profileFaultSource = profileFaultEnabled ? `
+      (() => {
+        if (window.parent === window || !location.pathname.includes('/modules/terminal/agent-terminal/')) return;
+        window.__profileFaultInjectedCount = 0;
+        window.__profileFaultLaterStatuses = [];
+        const passthroughFetch = window.fetch.bind(window);
+        window.fetch = async (...args) => {
+          if (String(args[0]).includes('/api/terminal/profiles')) {
+            if (window.__profileFaultInjectedCount === 0) { window.__profileFaultInjectedCount = 1; return new Response(JSON.stringify({ ok: false, error: 'PROFILE_FAULT_INJECTED' }), { status: 503, headers: { 'content-type': 'application/json' } }); }
+            const response = await passthroughFetch(...args);
+            window.__profileFaultLaterStatuses.push(response.status);
+            return response;
+          }
+          return passthroughFetch(...args);
+        };
+      })();` : '';
     browser = await launchCdpBrowser({ chrome: findChrome(), profileDir: path.join(root, 'browser'), url: environment.url, width: 1920, height: 1080 });
     await browser.setViewport(1920, 1080);
     await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
@@ -50,7 +67,7 @@ async function main() {
           return response;
         } catch (error) { settled(); throw error; }
       };
-    })();` });
+    })();${profileFaultSource}` });
     await browser.send('Page.navigate', { url: environment.url });
     const run = expression => browser.evaluate(expression);
     const frame = (id, expression) => run(`document.getElementById(${JSON.stringify(id)}).contentWindow.eval(${JSON.stringify(expression)})`);
@@ -110,6 +127,10 @@ async function main() {
     await waitFor(() => frame('workFrame', "!document.getElementById('btn-model').disabled"), 'workbench capabilities loaded');
     await frame('workFrame', "document.getElementById('btn-model').click()");
     await waitFor(() => frame('workFrame', "[...document.querySelectorAll('#pop-model button')].some(button=>button.textContent.includes('controlled-model'))"), 'controlled profile menu');
+    if (profileFaultEnabled) {
+      assert.equal(await frame('workFrame', 'window.__profileFaultInjectedCount'), 1, 'profile fault must be injected exactly once');
+      assert.ok((await frame('workFrame', 'window.__profileFaultLaterStatuses')).includes(200), 'menu recovery must ride a later real profiles request');
+    }
     await frame('workFrame', "[...document.querySelectorAll('#pop-model button')].find(button=>button.textContent.includes('controlled-model')).click()");
     await fill('#chat-input', '知识写入边界', 'workFrame'); await frame('workFrame', "document.getElementById('btn-send').click()");
     await waitFor(() => frame('workFrame', "document.getElementById('stream-col').textContent.includes('WORKBENCH_')"), 'streaming increment before completion');
@@ -348,9 +369,39 @@ async function main() {
     await browser.screenshot(path.join(proof, 'unbind-1920-dark.png'));
     assert.equal(browser.exceptions.length, 0, JSON.stringify(browser.exceptions));
     fs.mkdirSync(proof, { recursive: true });
-    fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), nodeVersion: process.version, installationReport: environment.installationReport, installationSource: environment.installationSource, runtimeRoots: environment.runtimeRoots, viewport: '1920x1080', model: 'controlled substitute', embedding: 'controlled substitute', commits, assertions: ['UI imports and four-module wiring', 'true Git Hook to live UI', 'native streamed message/navigation/abort', 'project drafts/history/citations', 'shell canonical citation and controlled clipboard provenance', 'long commit citation wrapping', 'late search and document response isolation', 'domain scope', 'memory evidence/edit/confirm/ignore and disk retrieval', 'native bridge events and engine diagnostics', 'four stable iframe identities', 'single progress subscription', 'four uniform embedded themes', 'maintenance default save and wiring repair', 'brain name/settings persistence without moving files', 'blank embedding credential preservation, disable revocation and explicit reconfiguration', 'native provider settings entry', 'project/commit diagnostic filtering and JSONL export', 'diagnostic subscription cleanup', 'durable reload', 'four-module keep-data unbind'] }, null, 2));
+    fs.writeFileSync(path.join(proof, 'report.json'), JSON.stringify({ passed: true, at: new Date().toISOString(), nodeVersion: process.version, installationReport: environment.installationReport, installationSource: environment.installationSource, runtimeRoots: environment.runtimeRoots, viewport: '1920x1080', model: 'controlled substitute', embedding: 'controlled substitute', profileFaultScenario: profileFaultEnabled ? 'single 503 on first /api/terminal/profiles in workFrame' : null, profileFaultInjectedCount: profileFaultEnabled ? await frame('workFrame', 'window.__profileFaultInjectedCount') : null, profileFaultLaterStatuses: profileFaultEnabled ? await frame('workFrame', 'window.__profileFaultLaterStatuses') : null, commits, assertions: ['UI imports and four-module wiring', 'true Git Hook to live UI', 'native streamed message/navigation/abort', 'project drafts/history/citations', 'shell canonical citation and controlled clipboard provenance', 'long commit citation wrapping', 'late search and document response isolation', 'domain scope', 'memory evidence/edit/confirm/ignore and disk retrieval', 'native bridge events and engine diagnostics', 'four stable iframe identities', 'single progress subscription', 'four uniform embedded themes', 'maintenance default save and wiring repair', 'brain name/settings persistence without moving files', 'blank embedding credential preservation, disable revocation and explicit reconfiguration', 'native provider settings entry', 'project/commit diagnostic filtering and JSONL export', 'diagnostic subscription cleanup', 'durable reload', 'four-module keep-data unbind'] }, null, 2));
     console.log(`PRODUCT_WEB_UI_ACCEPTANCE_PASSED ${proof} (real services/Git/Hook/files/index; controlled model/embedding; 1920x1080 only)`);
   } catch (error) {
+    failed = true;
+    if (browser && environment) {
+      try {
+        let backendProfiles;
+        try {
+          const response = await fetch(`${environment.url}/api/terminal/profiles`, { signal: AbortSignal.timeout(5000) });
+          let payload = null;
+          try { payload = await response.json(); } catch {}
+          const list = Array.isArray(payload) ? payload : payload && Array.isArray(payload.profiles) ? payload.profiles : null;
+          const safe = p => !p ? null : { id: p.id !== undefined ? p.id : null, name: p.name !== undefined ? p.name : null, enabled: p.enabled === undefined ? null : p.enabled === true, credentialConfigured: p.credentialConfigured === undefined ? null : p.credentialConfigured === true, defaultModel: p.models && p.models.default !== undefined ? p.models.default : null, modelCount: p.models ? Object.keys(p.models).length : null };
+          backendProfiles = { window: 'node-test', httpStatus: response.status, ok: response.ok === true, count: list ? list.length : null, profiles: list ? list.map(safe) : { code: 'UNEXPECTED_PAYLOAD' } };
+        } catch { backendProfiles = { window: 'node-test', code: 'FETCH_FAILED' }; }
+        const workbenchJson = await browser.evaluate(`(() => {
+          const frame = document.getElementById('workFrame');
+          if (!frame || !frame.contentWindow) return JSON.stringify({ window: 'workFrame', available: false });
+          try {
+            return frame.contentWindow.eval(${JSON.stringify(`(() => { try {
+              const st = typeof state !== 'undefined' ? state : (window.state !== undefined ? window.state : null);
+              const safe = p => !p ? null : { id: p.id !== undefined ? p.id : null, name: p.name !== undefined ? p.name : null, enabled: p.enabled === undefined ? null : p.enabled === true, credentialConfigured: p.credentialConfigured === undefined ? null : p.credentialConfigured === true, defaultModel: p.models && p.models.default !== undefined ? p.models.default : null, modelCount: p.models ? Object.keys(p.models).length : null };
+              const btn = document.getElementById('btn-model'); const label = document.querySelector('#model-label'); const pop = document.getElementById('pop-model'); const plist = document.getElementById('project-list'); const view = document.getElementById('view-terminal');
+              return JSON.stringify({ window: 'workFrame', available: true, stateAccess: st ? 'reachable' : 'unavailable', stateProfiles: st && Array.isArray(st.profiles) ? st.profiles.map(safe) : st ? { code: 'PROFILES_NOT_ARRAY' } : null, btnModel: btn ? { disabled: btn.disabled === true } : null, modelLabelText: label ? label.textContent : null, popModelButtons: pop ? [...pop.querySelectorAll('button')].map(button => button.textContent.trim()).slice(0, 12) : null, projectListPreview: plist ? plist.textContent.slice(0, 200) : null, viewTerminalInert: view ? view.inert === true : null, hasChatInput: document.getElementById('chat-input') !== null, profileFaultInjectedCount: typeof window.__profileFaultInjectedCount === 'number' ? window.__profileFaultInjectedCount : null, profileFaultLaterStatuses: Array.isArray(window.__profileFaultLaterStatuses) ? window.__profileFaultLaterStatuses.slice() : null });
+            } catch { return JSON.stringify({ window: 'workFrame', available: true, code: 'EVAL_FAILED' }); } })()`)});
+          } catch { return JSON.stringify({ window: 'workFrame', available: true, code: 'EVAL_FAILED' }); }
+        })()`);
+        const shellJson = await browser.evaluate(`(() => { try { const sel = document.getElementById('projectSelect'); return JSON.stringify({ window: 'shell-root', projectSelectValue: sel ? sel.value : null, registryInFlight: typeof window.__registryInFlight === 'number' ? window.__registryInFlight : null, heldRequests: window.__heldRequests ? window.__heldRequests.length : null }); } catch { return JSON.stringify({ window: 'shell-root', code: 'EVAL_FAILED' }); } })()`);
+        fs.mkdirSync(proof, { recursive: true });
+        fs.writeFileSync(path.join(proof, 'diagnostics.json'), JSON.stringify({ at: new Date().toISOString(), stage: 'failure', nodeVersion: process.version, faultScenario: profileFaultEnabled ? 'single 503 on first /api/terminal/profiles in workFrame' : null, backendProfiles, workbench: JSON.parse(workbenchJson), shell: JSON.parse(shellJson), browserExceptionsCount: browser.exceptions.length }, null, 2));
+        console.log(`FAILURE_DIAGNOSTICS ${path.join(proof, 'diagnostics.json')}`);
+      } catch { console.error('diagnostics unavailable'); }
+    }
     if (browser) { console.error(await browser.evaluate("document.body.innerText + '\\nWORKBENCH: ' + (document.getElementById('workFrame').contentDocument?.body?.innerText || '')")); await browser.screenshot(path.join(proof, 'failure.png')); }
     throw error;
   } finally {
@@ -358,9 +409,14 @@ async function main() {
     await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(10000)]);
     if (child.exitCode === null) { child.kill(); await delay(1000); }
     assert.equal(path.dirname(root), path.resolve(os.tmpdir())); assert.ok(path.basename(root).startsWith('智脑桌面验收-'));
-    // Windows can retain an exited browser/worker's directory handle briefly.
-    // The exact owned root was checked above; never widen cleanup on failure.
-    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    if (failed && process.env.KB_KEEP_FAILED_FIXTURE === '1') {
+      // Failure investigation opt-in: keep the exact owned root checked above.
+      console.log(`FAILED_FIXTURE_KEPT ${root}`);
+    } else {
+      // Windows can retain an exited browser/worker's directory handle briefly.
+      // The exact owned root was checked above; never widen cleanup on failure.
+      await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    }
   }
 }
 main().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
