@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 const AtomicFile = require('../../src/runtime/atomic-file');
+const { protectRealFixtureRoot } = require('./protect-fixture-credentials');
 const family = path.resolve(__dirname, '../../..');
 const installation = process.env.KB_PRODUCT_INSTALLATION_REPORT ? JSON.parse(fs.readFileSync(process.env.KB_PRODUCT_INSTALLATION_REPORT)) : null;
 if (installation && (!installation.integrityPassed || installation.schema !== 'project-knowledge/installed-registry/v1')) throw new Error('Verified registry installation required');
@@ -44,6 +45,11 @@ async function main() {
   if (realProfile) process.env.NODE_PATH = installation ? [path.join(shellPackage, 'node_modules'), path.join(installation.installedRoot, 'node_modules')].join(path.delimiter) : [path.join(family, 'claude-ai-workbench', 'node_modules'), process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
   const root = process.env.KB_PRODUCT_TEST_ROOT ? path.resolve(process.env.KB_PRODUCT_TEST_ROOT) : fs.mkdtempSync(path.join(os.tmpdir(), '智脑桌面验收-'));
   if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('智脑桌面验收-')) throw new Error('Acceptance root must be its own temporary directory');
+  // Real credentials are persisted inside this root (agent apiKey via
+  // setCredential, embedding secret via setEmbeddingConfig). Restrict it to
+  // the current user + SYSTEM before the first real credential write and
+  // abort startup when protection fails; the fake path never pays for ACLs.
+  if (realProfile || realEmbeddingSettings) protectRealFixtureRoot(root, { parent: os.tmpdir(), prefix: '智脑桌面验收-' });
   // Real tests must not silently inherit unrelated user plugins or their memories.
   if (realProfile && process.env.KB_ACCEPTANCE_USER_AGENT_CONFIG !== '1') process.env.CLAUDE_CONFIG_DIR = path.join(root, 'agent-config');
   const token = crypto.randomBytes(32).toString('hex');
