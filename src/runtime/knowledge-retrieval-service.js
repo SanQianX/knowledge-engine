@@ -113,6 +113,7 @@ class KnowledgeRetrievalService {
 
   scanCurrent(scopes) {
     const candidates = new Map();
+    const sources = new Map();
     const scopeHealth = [];
     for (const scope of scopes) {
       const state = this.projectStore.readState(scope.projectId);
@@ -123,6 +124,9 @@ class KnowledgeRetrievalService {
       for (const filePath of files) {
         const entryId = path.relative(scope.knowledgePath, filePath).replace(/\\/g, '/');
         const markdown = fs.readFileSync(filePath, 'utf8');
+        // Request-local only: the bodies stage of this same retrieval reuses
+        // this exact read; nothing is cached across requests.
+        sources.set(`${scope.spaceId}:${entryId}`, markdown);
         const documentHash = documentSha256(`chunker:${CHUNKER_VERSION}\n${markdown}`);
         const metadata = parseKnowledgeMetadata(markdown);
         const title = titleFromMarkdown(markdown, path.basename(entryId, '.md'));
@@ -168,7 +172,7 @@ class KnowledgeRetrievalService {
         deletedEntries,
       });
     }
-    return { candidates, scopeHealth };
+    return { candidates, scopeHealth, sources };
   }
 
   async recallIndex(scopes, query, current, health) {

@@ -40,7 +40,10 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     for (const [id, c] of scanned.candidates) {
       const key = `${c.spaceId}:${c.entryId}`;
       try {
-        if (!bodies.has(key)) bodies.set(key, ranking.bodyText(fs.readFileSync(path.join(c.knowledgePath, c.entryId), 'utf8')));
+        if (!bodies.has(key)) {
+          const source = scanned.sources && scanned.sources.get(key);
+          bodies.set(key, ranking.bodyText(source !== undefined ? source : fs.readFileSync(path.join(c.knowledgePath, c.entryId), 'utf8')));
+        }
       } catch { scanned.candidates.delete(id); }
     }
     // The canonical chunker emits authoritative half-open offsets into the same
@@ -150,6 +153,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
       result.candidates.set(id, candidate);
     }
     result.scopeHealth.push(...extra.scopeHealth);
+    if (extra.sources) for (const [sourceKey, sourceMarkdown] of extra.sources) result.sources.set(sourceKey, sourceMarkdown);
     return result;
   }
   async recallIndex(scopes, query, current, health, bodies) {
