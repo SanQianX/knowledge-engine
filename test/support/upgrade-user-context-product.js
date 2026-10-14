@@ -8,6 +8,8 @@ const { spawn } = require('node:child_process');
 const AtomicFile = require('../../src/runtime/atomic-file');
 const { snapshot, verify, assertInactive } = require('./existing-v5-audit');
 const { latestSuite } = require('./acceptance-progress');
+const { latestBoundSuite } = require('./retrieval-release-report');
+const { EXACT_VERSION, NPM_INTEGRITY, isRealCommit, isNewRelease, assertOfficialReceipt } = require('./official-receipt');
 
 // Workbench agent sessions observed in real products; any of these means a
 // user task is mid-flight and an upgrade would interrupt it.
@@ -16,31 +18,95 @@ const BOOTSTRAP_WORKBENCH = '0.13.2-rc.10';
 const BOOTSTRAP_ENGINE = '0.2.7-rc.5';
 const BOOTSTRAP_MODULES = { terminal: '@sanqianx/claude-ai-workbench', vectorHub: '@sanqianx/vector-hub', eventBridge: '@sanqianx/ai-coding-event-bridge-console' };
 
+// Expected module versions come from the frozen batch plan (the engine
+// publishes first; the Workbench version waits for its own freeze) and are
+// only trusted when an official registry download receipt pins them exactly.
+function parseExpectedVersions(argv) {
+  const expected = {};
+  for (const argument of argv) {
+    const match = /^--expect-(version|engine|workbench|vectorhub|eventbridge)=(.*)$/.exec(argument);
+    if (match) expected[match[1]] = match[2];
+  }
+  if (!Object.keys(expected).length) return null;
+  for (const [flag, value] of Object.entries(expected)) assert.match(value, EXACT_VERSION, `--expect-${flag} must be an exact published version, never a range or tag: ${value}`);
+  return expected;
+}
+
 // A bootstrap candidate proves a safe, officially published upgrade only:
-// a next-tagged 5.0.16-rc.N registry download with all four packaged module
-// identities pinned and the new Workbench expected. It is not a formal
-// system acceptance and must never install from latest.
-function assertBootstrapCandidate(installation) {
+// a next-tagged registry download with all four packaged module identities
+// pinned to the explicit expectations for this batch (legacy calls keep the
+// last frozen bootstrap pair). It is not a formal system acceptance and must
+// never install from latest.
+function assertBootstrapCandidate(installation, expected = {}) {
+  assert.equal(installation.schema, 'project-knowledge/installed-registry/v1', 'bootstrap expectations are only valid against an official registry download receipt');
+  for (const [flag, value] of Object.entries(expected)) assert.match(value, EXACT_VERSION, `--expect-${flag} must be an exact published version, never a range or tag: ${value}`);
   assert.equal(installation.registry, 'https://registry.npmjs.org/');
   assert.equal(installation.integrityPassed, true);
   assert.equal(installation.tag, 'next', 'bootstrap accepts a next-tagged candidate only, never latest');
-  assert.match(installation.version || '', /^5\.0\.16-rc\.\d+$/);
-  assert.equal(installation.engineVersion, BOOTSTRAP_ENGINE);
+  assert.match(installation.distIntegrity || '', NPM_INTEGRITY, 'receipt must carry the real npm dist integrity');
+  assert.ok(isRealCommit(installation.sourceCommit), 'receipt must carry the full-length git source commit of the installed candidate');
+  if (expected.version) assert.equal(installation.version, expected.version, 'receipt version must equal the explicitly expected candidate');
+  else assert.match(installation.version || '', /^5\.0\.16-rc\.\d+$/);
+  const expectedEngine = expected.engine || BOOTSTRAP_ENGINE;
+  assert.equal(installation.engineVersion, expectedEngine, 'receipt engine must equal the expected version for this batch');
   for (const [key, packageName] of Object.entries(BOOTSTRAP_MODULES)) {
     const module = (installation.modules || {})[key];
-    assert.ok(module && module.version && module.distIntegrity, `receipt module ${key} must carry registry identity`);
+    assert.ok(module && module.version && NPM_INTEGRITY.test(module.distIntegrity || '') && isRealCommit(module.sourceCommit), `receipt module ${key} must carry registry identity`);
+    assert.equal(module.packageName, packageName, `receipt module ${key} must be the official ${packageName}`);
+    assert.match(module.distIntegrity, NPM_INTEGRITY, `receipt module ${key} must carry the real npm dist integrity`);
+  }
+  const expectedWorkbench = expected.workbench || BOOTSTRAP_WORKBENCH;
+  assert.equal(installation.modules.terminal.version, expectedWorkbench, 'receipt workbench must equal the C3-frozen expectation for this batch');
+  if (expected.vectorhub) assert.equal(installation.modules.vectorHub.version, expected.vectorhub, 'receipt vector hub must equal the expected version for this batch');
+  if (expected.eventbridge) assert.equal(installation.modules.eventBridge.version, expected.eventbridge, 'receipt event bridge must equal the expected version for this batch');
+  return true;
+}
+
+const FORMAL_INSTALLED_LABELS = ['registry24', 'web24', 'web22', 'fault24', 'fault22', 'lifecycle24', 'lifecycle22', 'claude-real24', 'codex-real24', 'zcode-real24', 'opencode-real24', 'real-commits24', 'workbench24', 'embedding24', 'quality24', 'performance24', 'surfaces24', 'user-query24', 'local-marketplace24'];
+
+// A formal upgrade of a new release (5.0.16 and later) is gated only by this
+// round's own evidence bound to the actual official install receipt: the
+// explicitly expected exact released version, every module identity and
+// every core gate passed under a matching install or source identity. No
+// condition of the frozen legacy gate lists is lowered.
+function formalGatePlan(installation, expected = {}, sourcePrefixArg = null) {
+  if (!isNewRelease(installation.version)) return null;
+  // The formal release is published and accepted under the official next tag
+  // first and promoted to latest only after every gate passes, so either
+  // official dist-tag is valid formal evidence; any other tag stays illegal.
+  assertOfficialReceipt(installation);
+  assert.match(installation.version, /^\d+\.\d+\.\d+$/, 'a formal upgrade accepts the released version only, never an rc candidate');
+  assert.ok(expected.version, 'a formal upgrade of a new release requires --expect-version=<exact released version>');
+  assert.match(expected.version, /^\d+\.\d+\.\d+$/, 'a formal upgrade expects a released version, never an rc candidate');
+  assert.equal(installation.version, expected.version, 'receipt version must equal the explicitly expected formal version');
+  if (expected.engine) assert.equal(installation.engineVersion, expected.engine, 'receipt engine must equal the explicitly expected version');
+  for (const [key, packageName] of Object.entries(BOOTSTRAP_MODULES)) {
+    const module = (installation.modules || {})[key];
+    assert.ok(module && module.version && NPM_INTEGRITY.test(module.distIntegrity || '') && isRealCommit(module.sourceCommit), `receipt module ${key} must carry registry identity`);
     assert.equal(module.packageName, packageName, `receipt module ${key} must be the official ${packageName}`);
   }
-  assert.equal(installation.modules.terminal.version, BOOTSTRAP_WORKBENCH);
-  return true;
+  if (expected.workbench) assert.equal(installation.modules.terminal.version, expected.workbench, 'receipt workbench must equal the explicitly expected version');
+  if (expected.vectorhub) assert.equal(installation.modules.vectorHub.version, expected.vectorhub, 'receipt vector hub must equal the explicitly expected version');
+  if (expected.eventbridge) assert.equal(installation.modules.eventBridge.version, expected.eventbridge, 'receipt event bridge must equal the explicitly expected version');
+  assert.match(sourcePrefixArg || '', /^retrieval-rc\d+$/, 'a formal upgrade of a new release requires --source-prefix=retrieval-rcN naming this batch source round');
+  return { bound: true, sourcePrefix: sourcePrefixArg, tag: installation.tag, gates: [
+    sourcePrefixArg + '-engine22', sourcePrefixArg + '-engine24', sourcePrefixArg + '-shell22', sourcePrefixArg + '-shell24',
+    ...FORMAL_INSTALLED_LABELS.map(name => 'retrieval-formal-' + name),
+  ] };
 }
 
 async function main() {
   const bootstrap = process.argv.includes('--bootstrap-candidate');
+  const expected = parseExpectedVersions(process.argv);
+  const sourcePrefixArg = (process.argv.find(argument => argument.startsWith('--source-prefix=')) || '').slice('--source-prefix='.length) || null;
   const installationFile = path.resolve(process.argv[2]), installation = JSON.parse(fs.readFileSync(installationFile));
   const evidence = path.resolve(__dirname, '../../.agent-state/acceptance/system-regression');
-  if (bootstrap) assertBootstrapCandidate(installation);
+  if (bootstrap) assertBootstrapCandidate(installation, expected || {});
   else {
+    const plan = formalGatePlan(installation, expected || {}, sourcePrefixArg);
+    if (plan) for (const name of plan.gates) assert.equal(latestBoundSuite(evidence, name, installation).passed, true, name);
+    else {
+    if (expected) throw new Error('--expect-* pinning applies to --bootstrap-candidate runs; formal upgrades keep their frozen gate lists');
     assert.equal(installation.integrityPassed, true); assert.ok(['5.0.11', '5.0.12', '5.0.15'].includes(installation.version));
     const gates = installation.version === '5.0.15'
       ? ['retrieval-rc5-engine24', 'retrieval-rc5-engine22', 'retrieval-rc5-shell24', 'retrieval-rc5-shell22', ...['registry24', 'web24', 'web22', 'fault24', 'fault22', 'lifecycle24', 'lifecycle22', 'claude-real24', 'codex-real24', 'zcode-real24', 'opencode-real24', 'real-commits24', 'workbench24', 'embedding24', 'quality24', 'performance24', 'surfaces24', 'user-query24', 'local-marketplace24'].map(name => 'retrieval-formal-' + name)]
@@ -48,11 +114,13 @@ async function main() {
       ? ['context-rc2-shell-source24', 'context-rc2-shell-source22', 'context-rc2-registry24', 'context-rc2-web24', 'context-rc2-web22', 'context-rc2-real-native24']
       : ['source-file-fixed24', 'source-file-fixed22', 'native-final-source24', 'native-final-source22', 'native-rc3-registry24', 'native-rc3-web24', 'native-rc3-web22', 'native-rc3-fault24', 'native-rc3-fault22', 'native-rc3-claude-real24', 'native-rc3-codex-real24', 'native-rc3-zcode-user-real24', 'native-rc3-real-commits24', 'native-rc3-workbench-real24', 'native-rc3-embedding24'];
     for (const name of gates) assert.equal(latestSuite(evidence, name).passed, true, name);
+    }
   }
   const dataDir = path.join(os.homedir(), '.project-knowledge-v5'), core = path.join(process.env.APPDATA, 'npm/node_modules/@sanqianx/project-knowledge');
   const proof = path.join(evidence, 'context-user-upgrade-' + Date.now());
   const blocked = bootstrap || installation.version === '5.0.15';
   const report = { passed: false, mode: bootstrap ? 'bootstrap-candidate' : 'formal', systemAcceptanceComplete: false, installationFile, expectedVersion: installation.version, startedAt: new Date().toISOString() };
+  if (bootstrap) report.expectedVersions = expected || { engine: BOOTSTRAP_ENGINE, workbench: BOOTSTRAP_WORKBENCH };
   const save = () => AtomicFile.writeJsonAtomic(path.join(proof, 'result.json'), report);
   const read = async route => { const response = await fetch('http://127.0.0.1:5757' + route, { signal: AbortSignal.timeout(15000) }); assert.ok(response.ok, route); return response.json(); };
   const execute = async (script, args, timeoutMs = 65000) => {
@@ -97,4 +165,4 @@ async function main() {
   } catch (error) { report.failure = String(error.message).slice(0, 1600); save(); throw error; }
 }
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { assertBootstrapCandidate, ACTIVE_AGENT_SESSION, BOOTSTRAP_WORKBENCH };
+module.exports = { assertBootstrapCandidate, parseExpectedVersions, formalGatePlan, ACTIVE_AGENT_SESSION, BOOTSTRAP_WORKBENCH };
