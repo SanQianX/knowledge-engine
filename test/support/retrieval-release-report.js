@@ -101,6 +101,7 @@ function buildReport({ installation, installationFile = null, prefix, bindReceip
     'retrieval-source-vector22', 'retrieval-source-vector24', 'retrieval-source-workbench22', 'retrieval-source-workbench24', 'retrieval-source-bridge22', 'retrieval-source-bridge24'];
   const candidateLabels = ['registry24', 'web22', 'web24', 'fault22', 'fault24', 'lifecycle22', 'lifecycle24', 'quality24', 'performance24',
     'user-query24', 'local-marketplace24', 'real-commits24', 'claude-real24', 'codex-real24', 'zcode-real24', 'opencode-real24', 'workbench24', 'embedding24', 'surfaces24'];
+  if (isNewRelease(installation.version)) candidateLabels.push('topic-context24');
   const lookup = bound ? label => latestBoundSuite(directory, label, installation) : label => latestSuite(directory, label);
   const source = sourceLabels.map(lookup);
   const installed = candidateLabels.map(label => lookup(prefix + '-' + label));

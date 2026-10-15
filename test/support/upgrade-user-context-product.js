@@ -62,7 +62,7 @@ function assertBootstrapCandidate(installation, expected = {}) {
   return true;
 }
 
-const FORMAL_INSTALLED_LABELS = ['registry24', 'web24', 'web22', 'fault24', 'fault22', 'lifecycle24', 'lifecycle22', 'claude-real24', 'codex-real24', 'zcode-real24', 'opencode-real24', 'real-commits24', 'workbench24', 'embedding24', 'quality24', 'performance24', 'surfaces24', 'user-query24', 'local-marketplace24'];
+const FORMAL_INSTALLED_LABELS = ['registry24', 'web24', 'web22', 'fault24', 'fault22', 'lifecycle24', 'lifecycle22', 'claude-real24', 'codex-real24', 'zcode-real24', 'opencode-real24', 'real-commits24', 'workbench24', 'embedding24', 'quality24', 'performance24', 'surfaces24', 'user-query24', 'local-marketplace24', 'topic-context24'];
 
 // A formal upgrade of a new release (5.0.16 and later) is gated only by this
 // round's own evidence bound to the actual official install receipt: the

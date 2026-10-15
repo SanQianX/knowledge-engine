@@ -127,7 +127,7 @@ test('formal upgrades of new releases gate on this round\'s bound evidence with 
     'retrieval-formal-lifecycle24', 'retrieval-formal-lifecycle22', 'retrieval-formal-claude-real24', 'retrieval-formal-codex-real24',
     'retrieval-formal-zcode-real24', 'retrieval-formal-opencode-real24', 'retrieval-formal-real-commits24', 'retrieval-formal-workbench24',
     'retrieval-formal-embedding24', 'retrieval-formal-quality24', 'retrieval-formal-performance24', 'retrieval-formal-surfaces24',
-    'retrieval-formal-user-query24', 'retrieval-formal-local-marketplace24']);
+    'retrieval-formal-user-query24', 'retrieval-formal-local-marketplace24', 'retrieval-formal-topic-context24']);
   assert.throws(() => formalGatePlan(formal, {}, 'retrieval-rc6'), /expect-version/);
   assert.throws(() => formalGatePlan(formal, { version: '5.0.16-rc.1' }, 'retrieval-rc6'), /released version/);
   assert.equal(formalGatePlan(installation({ version: '5.0.16' }), { version: '5.0.16' }, 'retrieval-rc6').bound, true);

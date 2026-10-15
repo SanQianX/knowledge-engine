@@ -36,7 +36,7 @@ test('install evidence needs official provenance on both sides, never default tr
   assert.equal(matchesInstallation({ installIdentity: provenance }, installation()), 'install-receipt');
 });
 
-test('a formal next-tagged release receipt is accepted for the full 23-gate plan before latest promotion', () => {
+test('a formal next-tagged release receipt is accepted for the full 24-gate plan before latest promotion', () => {
   const plan = formalGatePlan(installation({ tag: 'next', version: '5.0.16' }), { version: '5.0.16' }, 'retrieval-rc6');
   assert.equal(plan.bound, true);
   assert.equal(plan.tag, 'next');
@@ -46,8 +46,8 @@ test('a formal next-tagged release receipt is accepted for the full 23-gate plan
     'retrieval-formal-lifecycle24', 'retrieval-formal-lifecycle22', 'retrieval-formal-claude-real24', 'retrieval-formal-codex-real24',
     'retrieval-formal-zcode-real24', 'retrieval-formal-opencode-real24', 'retrieval-formal-real-commits24', 'retrieval-formal-workbench24',
     'retrieval-formal-embedding24', 'retrieval-formal-quality24', 'retrieval-formal-performance24', 'retrieval-formal-surfaces24',
-    'retrieval-formal-user-query24', 'retrieval-formal-local-marketplace24']);
-  assert.equal(plan.gates.length, 23);
+    'retrieval-formal-user-query24', 'retrieval-formal-local-marketplace24', 'retrieval-formal-topic-context24']);
+  assert.equal(plan.gates.length, 24);
   const latest = formalGatePlan(installation({ tag: 'latest', version: '5.0.16' }), { version: '5.0.16' }, 'retrieval-rc6');
   assert.equal(latest.bound, true);
   assert.equal(latest.tag, 'latest');

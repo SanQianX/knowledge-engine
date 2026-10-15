@@ -42,12 +42,15 @@ async function main() {
     await waitFor(() => frame("(()=>{if(document.getElementById('pop-model').hidden)document.getElementById('btn-model').click();return [...document.querySelectorAll('#pop-model button')].some(button=>button.textContent.includes('MiniMax-M3'))})()"), 'real model configured');
     const selectedModel = await frame("(()=>{const button=[...document.querySelectorAll('#pop-model button')].find(button=>button.textContent.includes('MiniMax-M3'));const model=button.querySelector('.grow').textContent.trim();button.click();return model})()");
     await waitFor(() => frame(`document.getElementById('model-label').textContent.includes(${JSON.stringify(selectedModel)}) && document.getElementById('pop-model').hidden`), 'selected model applied');
-    const prompt = `请先参考注入的项目知识，简要说明知识库为什么由引擎统一写入，并引用提交 ${sha} 对应的真实知识依据。不要调用工具或修改文件。查询关键词：知识、提交、单写者、${sha}。`;
+    const prompt = `请先参考注入的项目知识，简要说明提交 ${sha} 的策略文本怎样描述知识写入职责，引用其中的英文原句和完整提交；区分策略声明与已实现功能，不要推测。不要调用工具或修改文件。查询关键词：知识、提交、引擎、单写者、${sha}。`;
     await frame(`(()=>{const field=document.getElementById('chat-input');field.value=${JSON.stringify(prompt)};field.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('btn-send').click()})()`);
     await waitFor(() => frame("document.getElementById('btn-send').title==='停止'"), 'UI send starts real task');
     const sentSessionId = await frame('state.activeSessionId');
     assert.ok(sentSessionId);
+    const delivered = await (await fetch(new URL(`/api/terminal/sessions/${sentSessionId}/knowledge`, environment.url))).json();
+    assert.ok(delivered.references.some(r => r.commitSha === sha && r.text.includes('Knowledge has one writer: the engine promotion path.')), 'UI send must deliver the actual policy evidence, not only a commit citation');
     await waitFor(() => frame(`document.getElementById('stream-col').textContent.includes(${JSON.stringify(sha)}) && document.getElementById('btn-send').title!=='停止'`), 'real answer and citation refresh without reload', 300000);
+    assert.ok(await frame("document.getElementById('stream-col').textContent.includes('Knowledge has one writer: the engine promotion path.')"), 'the real answer must quote the retrieved policy rather than deny its existence');
     await waitFor(() => run("document.querySelectorAll('#contextContent .reference').length>0"), 'real retrieval references displayed');
     await waitFor(async () => {
       const snapshot = await (await fetch(new URL(`/api/terminal/sessions/${sentSessionId}`, environment.url))).json();

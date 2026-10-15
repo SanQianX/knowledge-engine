@@ -29,6 +29,21 @@ const stamp = (directory, label, at, fields = {}) => {
 };
 const find = (report, label) => [...report.source, ...report.installed].find(gate => gate.label === label);
 
+test('new releases require topical evidence delivery, not just a commit citation', t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-topic-gate-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const current = installation();
+  let report = buildReport({ installation: current, prefix: 'retrieval-rc7', directory });
+  assert.equal(find(report, 'retrieval-rc7-topic-context24')?.status, 'not-run');
+  stamp(directory, 'retrieval-rc7-topic-context24', 1, { installIdentity: current });
+  report = buildReport({ installation: current, prefix: 'retrieval-rc7', directory });
+  assert.equal(find(report, 'retrieval-rc7-topic-context24').passed, true);
+  const { formalGatePlan } = require('./support/upgrade-user-context-product');
+  assert.ok(formalGatePlan(installation({ version: '5.0.16' }), { version: '5.0.16' }, 'retrieval-rc7').gates.includes('retrieval-formal-topic-context24'));
+  const legacy = buildReport({ installation: installation({ version: '5.0.15', engineVersion: '0.2.7-rc.5' }), prefix: 'retrieval-rc5', directory });
+  assert.ok(!legacy.installed.some(gate => gate.label.endsWith('-topic-context24')));
+});
+
 test('a bound formal report never inherits 5.0.15 formal labels and requires this batch identity', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-release-bind-'));
   stamp(directory, 'retrieval-formal-web24', 10);
