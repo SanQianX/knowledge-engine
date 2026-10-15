@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const AtomicFile = require('../../src/runtime/atomic-file');
+const { verifyClientToolEvidence } = require('./client-tool-evidence');
 
 async function main() {
   const environment = JSON.parse(fs.readFileSync(path.resolve(process.argv[2]), 'utf8'));
@@ -42,7 +43,7 @@ async function main() {
       sessionId = created.session.sessionId; item.sessionId = sessionId;
       const cli = path.join(core, 'bin/project-knowledge-kb.js').replace(/\\/g, '/');
       const command = `node ${JSON.stringify(cli)} search --project ${project.projectId} --query ${run.commitSha} --scope project --json`;
-      item.rawPrompt = `这是受控测试项目的只读接入验收。请实际调用终端工具执行以下命令，从返回的知识中说明单写者规则，并引用 entry_id 与完整 commitSha。不要改文件、提交、调用其他服务或读取凭据；不可以凭记忆回答。\n${command}`;
+      item.rawPrompt = `这是受控测试项目的只读接入验收。请实际调用终端工具执行以下命令，简要说明返回知识中的变更事实，并引用 entry_id 与完整 commitSha。仅依据实际返回内容，不要求其中包含特定规则。不要改文件、提交、调用其他服务或读取凭据；不可以凭记忆回答。\n${command}`;
       const inputStartedAt = Date.now();
       const accepted = await api(`/api/terminal/sessions/${sessionId}/input`, { text: item.rawPrompt });
       item.inputReceipt = { accepted: accepted.accepted, durationMs: Date.now() - inputStartedAt };
@@ -60,9 +61,7 @@ async function main() {
       }
       assert.equal(snapshot.session.state, 'idle', 'client task must actually complete');
       const toolEvents = snapshot.events.filter(e => ['claude/tool-use', 'claude/tool-result'].includes(e.type));
-      const toolText = JSON.stringify(toolEvents);
-      assert.ok(toolEvents.some(e => e.type === 'claude/tool-use') && toolText.includes('project-knowledge-kb.js') && toolText.includes(run.commitSha), 'actual knowledge tool command required');
-      assert.ok(toolText.includes('hybrid+markdown-truth') && toolText.includes('entry_id'), 'actual authoritative tool output required, not a claimed invocation');
+      item.knowledgeToolEvidence = verifyClientToolEvidence(toolEvents, { projectId: project.projectId, commitSha: run.commitSha });
       const answer = snapshot.events.filter(e => e.type === 'claude/result' && e.isError === false).at(-1).result;
       assert.ok(answer.includes(run.commitSha));
       const context = await api(`/api/terminal/sessions/${sessionId}/knowledge`);
