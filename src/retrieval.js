@@ -73,7 +73,7 @@ class EngineRetrieval extends KnowledgeRetrievalService {
     const ranked = ['greeting', 'followup'].includes(ranking.intent(signals.indexQuery)) ? [] : ranking.rank([...scanned.candidates.values()], signals.indexQuery, c => {
       const scored = this.score(c, signals);
       return { ...scored, excluded: Boolean(signals.commitPrefixes?.length || c.knownFileQuery) && scored.score <= 0 };
-    });
+    }, { commitPrefixes: signals.commitPrefixes });
     const ordered = input.policy === 'project-first' ? [...ranked.filter(c => c.scopeReason === 'primary'), ...ranked.filter(c => c.scopeReason !== 'primary')] : ranked;
     const checked = new Map(), candidates = [];
     // Revalidate every returned document after the asynchronous vector call,

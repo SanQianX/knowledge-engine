@@ -8,6 +8,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
+const { EngineContext } = require('../src/context');
 
 async function fixture(t, documents) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'retrieval-quality-'));
@@ -81,6 +82,32 @@ test('a long document contributes at most two complementary snippets, not every 
   const f = await fixture(t, { 'project-recipe': { 'modules/plate.md': '# Plate 未保存提醒\n\n' + Array.from({ length: 25 }, (_, i) => `## 场景 ${i}\n\nPlate 未保存提醒与 dirty 状态同步。\n`).join('\n') } });
   const r = await f.retrieval.search({ projectId: 'project-recipe', query: 'Plate 未保存提醒 dirty', limit: 30 });
   assert.ok(r.results.length > 0); assert.ok(r.results.length <= 2);
+});
+
+test('known commit plus a Chinese topic delivers the actual English patch fact, not only metadata', async t => {
+  const commitSha = '9aec087aa15574a3a9aecd9945ed0d62aba82d9b', entryId = 'changes/9aec087aa155.md';
+  const text = `# 提交 9aec087a 新增 knowledge-policy-rc6-leader1.txt\n\n提交 ${commitSha} 新增文件，作者 Product Acceptance，主题 acceptance，提交依据完整。\n\n## Patch 证据\n\n\`\`\`diff\n+Knowledge has one writer: the engine promotion path. Preserve native workbench streaming and keep the product simple.\n\`\`\`\n\n## 事实记录\n\n本次知识只记录真实提交变化，不推测知识库为什么由引擎统一写入。该文件未修改源码、构建或 CI。\n\n## 与既有知识的对照\n\n保持知识、提交和当前维护依据一致。\n`;
+  const f = await fixture(t, { 'project-recipe': { [entryId]: text } });
+  f.runs.push({ projectId: 'project-recipe', commitSha, promotedAt: '2026-10-15T00:00:00Z', staging: { operations: [{ path: entryId }] } });
+  f.retrieval.recallIndex = async (scopes, query, candidates, health) => {
+    health.index = 'ok';
+    for (const c of candidates.values()) if (!c.chunkText.includes('Knowledge has one writer')) Object.assign(c, { vectorVerified: true, vectorCalibrated: true, vectorMinScore: 0.5, indexScore: 0.9 });
+  };
+  const query = `请先参考注入的项目知识，简要说明知识库为什么由引擎统一写入，并引用提交 ${commitSha} 对应的真实知识依据。查询关键词：知识、提交、单写者、${commitSha}。`;
+  const before = fs.readFileSync(path.join(f.projects[0].knowledgePath, entryId), 'utf8');
+  const result = await f.retrieval.search({ projectId: 'project-recipe', query, limit: 5 });
+  assert.ok(result.results.some(r => r.chunk_text.includes('Knowledge has one writer')), 'Patch evidence must not be squeezed out by repeated commit identifiers and metadata');
+  assert.ok(result.results.length <= 2, 'preserve the document diversity limit');
+  assert.ok(result.results.every((r, i, rows) => !i || rows[i - 1].score >= r.score));
+  const english = await f.retrieval.search({ projectId: 'project-recipe', query: `one writer engine ${commitSha}`, limit: 2 });
+  assert.ok(english.results[0].chunk_text.includes('Knowledge has one writer'));
+  const identifier = await f.retrieval.search({ projectId: 'project-recipe', query: commitSha, limit: 2 });
+  assert.ok(identifier.results.some(r => r.chunk_text.includes('Knowledge has one writer')), 'SHA-only ties are deterministic and retain the first actual evidence section');
+  const memories = { store: { state: { memories: [] } }, brainScope: () => null, applicable: () => false };
+  const context = await new EngineContext({ retrieval: f.retrieval, memories }).prepare({ projectId: 'project-recipe', query });
+  assert.ok(context.facts.some(r => r.text.includes('Knowledge has one writer') && r.commitSha === commitSha));
+  assert.ok(context.prompt.length <= 8000);
+  assert.equal(fs.readFileSync(path.join(f.projects[0].knowledgePath, entryId), 'utf8'), before);
 });
 
 test('explicit project/domain scope remains inclusive but never leaks other-domain facts', async t => {

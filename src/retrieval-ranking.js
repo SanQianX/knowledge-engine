@@ -8,6 +8,8 @@ const ALIASES = [
   ['recipe', '配方'], ['plate', '配方'], ['alignment', '对齐'], ['report', '报表'], ['commit', '提交'],
   ['vector', '向量'], ['retrieval', '检索'], ['search', '检索'], ['knowledge', '知识'], ['timeout', '超时'],
   ['cancel', '取消'], ['connection', '连接'], ['save', '保存'],
+  ['engine', '引擎'], ['promotion', '晋升'], ['writer', '写入'],
+  ['one writer', '单写者'], ['single-writer', '单写者'],
 ];
 const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('zh', { granularity: 'word' }) : null;
 const termCache = new Map();
@@ -50,9 +52,10 @@ function intent(query) {
   return 'search';
 }
 
-function lexical(candidates, query) {
+function lexical(candidates, query, ignoredTerms = []) {
   const q = terms(query), wanted = new Map();
-  for (const word of q.main) wanted.set(word, 1);
+  const ignored = new Set(ignoredTerms);
+  for (const word of q.main) if (!ignored.has(word)) wanted.set(word, 1);
   for (const gram of q.grams) if (!wanted.has(gram)) wanted.set(gram, 0.2);
   const rows = candidates.map(c => {
     const body = terms(c.chunkText), title = terms(`${c.title} ${c.headingPath.join(' ')} ${c.entryId}`), freq = new Map();
@@ -76,8 +79,10 @@ function lexical(candidates, query) {
   }
 }
 
-function rank(candidates, query, scoreIdentity) {
-  lexical(candidates, query);
+function rank(candidates, query, scoreIdentity, options = {}) {
+  // A resolved commit already constrains provenance. Repeated SHA text in a
+  // heading is not evidence for the topic asked about within that commit.
+  lexical(candidates, query, options.commitPrefixes || []);
   const eligible = [];
   for (const c of candidates) {
     const identified = scoreIdentity(c);
@@ -90,6 +95,7 @@ function rank(candidates, query, scoreIdentity) {
     c.selectionSignals = [...exact, ...(c.lexicalScore > 0 ? ['lexical:bm25'] : []), ...(c.vectorVerified ? ['index:vector-hub'] : []),
       `scope:${c.scopeReason}`, ...(c.fromOverlay ? ['markdown-delta-overlay'] : [])];
     c.identityMatch = exact.length > 0;
+    c.commitMatch = exact.includes('exact-commit');
     eligible.push(c);
   }
   const order = (a, b) => a.recordId.localeCompare(b.recordId);
@@ -97,8 +103,12 @@ function rank(candidates, query, scoreIdentity) {
   const vectorRows = eligible.filter(c => c.vectorVerified && c.indexScore > 0).sort((a, b) => b.indexScore - a.indexScore || order(a, b));
   const scores = new Map();
   for (const list of [lexicalRows, vectorRows]) list.forEach((c, i) => scores.set(c.recordId, (scores.get(c.recordId) || 0) + 1 / (60 + i + 1)));
-  for (const c of eligible) c.relevanceScore = (scores.get(c.recordId) || 0) + (c.identityMatch ? 1 : 0);
-  eligible.sort((a, b) => b.relevanceScore - a.relevanceScore || (a.scopeReason === 'primary' ? -1 : b.scopeReason === 'primary' ? 1 : 0) || order(a, b));
+  // For a resolved commit, order its snippets by the remaining topic, not by
+  // having two recall channels. Normal semantic queries keep RRF unchanged.
+  for (const c of eligible) c.relevanceScore = c.commitMatch ? 1 + c.lexicalScore / (1 + c.lexicalScore)
+    : (scores.get(c.recordId) || 0) + (c.identityMatch ? 1 : 0);
+  eligible.sort((a, b) => b.relevanceScore - a.relevanceScore
+    || Number(b.scopeReason === 'primary') - Number(a.scopeReason === 'primary') || order(a, b));
   const selected = [], byDocument = new Map();
   for (const c of eligible) {
     const key = `${c.spaceId}:${c.entryId}`, prior = byDocument.get(key) || [];
