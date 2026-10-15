@@ -10,8 +10,10 @@ async function main() {
   assert.equal(path.dirname(environment.root), path.resolve(os.tmpdir()));
   assert.ok(path.basename(environment.root).startsWith('智脑桌面验收-'));
   assert.equal(environment.installationSource, 'project-knowledge/installed-registry/v1');
-  const commitSha = '9aec087aa15574a3a9aecd9945ed0d62aba82d9b';
-  const entryId = 'changes/9aec087aa155.md';
+  const commitAt = process.argv.indexOf('--commit');
+  const commitSha = commitAt < 0 ? '9aec087aa15574a3a9aecd9945ed0d62aba82d9b' : process.argv[commitAt + 1];
+  assert.match(commitSha || '', /^[a-f0-9]{40}$/);
+  const entryId = `changes/${commitSha.slice(0, 12)}.md`;
   const expected = 'Knowledge has one writer: the engine promotion path.';
   const query = `请先参考注入的项目知识，简要说明知识库为什么由引擎统一写入，并引用提交 ${commitSha} 对应的真实知识依据。不要调用工具或修改文件。查询关键词：知识、提交、单写者、${commitSha}。`;
   const api = async (action, input) => {
