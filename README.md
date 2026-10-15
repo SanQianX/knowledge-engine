@@ -22,6 +22,10 @@
 
 ## 与 shell 的接线契约（模块契约）
 
+运行投影支持 `GET /api/snapshot?summary=1&limit=50` 和 `GET /api/runs?summary=1&projectId=...&before=<cursor>`，每页最多 100 条；概要不携带 staging 和冻结证据，完整详情仍由 `GET /api/runs/:id` 读取。未指定概要参数时保留旧接口。进度订阅 `summary=1` 的初始快照只含游标，消费者先读取有界快照。
+
+受管激活 `POST /api/control` 可传入已安全接线的 `projectIds` 白名单；未接线项目的任务保留排队，不能执行或恢复晋升。新增可用项目只恢复其自身的晋升与索引，重复激活不重复恢复；服务就绪与单项目接线失败分别投影。
+
 - **env**：`KB_KNOWLEDGE_ENGINE_URL`（默认 `http://127.0.0.1:5790`）、`KB_KNOWLEDGE_ENGINE_COMMAND`（显式命令行覆盖）、随家族一起受 `KB_MODULES_AUTOSTART=0` 约束。
 - **supervisor**：shell `_supervisedSpecs()` 增加本模块条目（vendored runtime 位于 `project-knowledge-base/_modules/knowledge-engine/`），探测已监听则不重复拉起，退出指数退避重启。
 - **反代**：`/api/engine/<rest>` → 本服务 `/api/<rest>`，浏览器同源，无 CORS。

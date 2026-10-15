@@ -520,7 +520,7 @@ class KnowledgePromotionService {
     return this.rollbackJournal(journal);
   }
 
-  async recoverAll() {
+  async recoverAll(allowedProjects = null) {
     const root = this.layout.getRuntimePath('promotions');
     if (!fs.existsSync(root)) return [];
     const files = [];
@@ -541,7 +541,7 @@ class KnowledgePromotionService {
           return value;
         },
       });
-      results.push({ file, ...(await this.recoverJournal(journal)) });
+      if (!allowedProjects || allowedProjects.has(journal.projectId)) results.push({ file, ...(await this.recoverJournal(journal)) });
     }
     return results;
   }

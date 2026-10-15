@@ -36,7 +36,7 @@ function createEngineServer(options = {}) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       connections.add(res);
       const projectId = url.searchParams.get('projectId');
-      res.write(`event: snapshot\ndata: ${JSON.stringify({ cursor: store.state.cursor, runs: store.listRuns(projectId || null) })}\n\n`);
+      res.write(`event: snapshot\ndata: ${JSON.stringify({ cursor: store.state.cursor, ...(url.searchParams.get('summary') === '1' ? {} : { runs: store.listRuns(projectId || null) }) })}\n\n`);
       const listener = event => { if ((!projectId || event.projectId === projectId) && !res.destroyed) res.write(`id: ${event.seq || store.state.cursor}\nevent: progress\ndata: ${JSON.stringify(event)}\n\n`); };
       coordinator.on('progress', listener);
       const heartbeat = setInterval(() => { if (!res.destroyed) res.write(': heartbeat\n\n'); }, 15000);
@@ -52,7 +52,8 @@ function createEngineServer(options = {}) {
       if (pathname === '/api/control' && req.method === 'POST') {
         if (!trusted(req)) throw httpError(403, 'RUNTIME_AUTH_REQUIRED', '仅允许受信任外壳切换运行所有权。');
         if (body.enabled !== true) throw httpError(400, 'INVALID_ARGUMENT', '只支持外壳完成接线后的启用操作。');
-        await coordinator.activate(); send(res, 200, { ok: true }); return;
+        if (body.projectIds !== undefined && (!Array.isArray(body.projectIds) || body.projectIds.some(id => typeof id !== 'string' || !store.getProject(id)))) throw httpError(400, 'INVALID_ARGUMENT', '启用项目未登记。');
+        await coordinator.activate(body.projectIds); send(res, 200, { ok: true }); return;
       }
       if (pathname === '/api/runtime-config' && req.method === 'POST') {
         if (!trusted(req)) throw httpError(403, 'RUNTIME_AUTH_REQUIRED', '仅允许受信任本地服务解析配置。');
@@ -125,7 +126,7 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
     if (!result.removed) throw httpError(404, 'NOT_FOUND', '项目未登记。');
     return { ...result, keptData: true };
   }
-  if (method === 'GET' && pathname === '/api/runs') return { runs: store.listRuns(search.get('projectId')) };
+  if (method === 'GET' && pathname === '/api/runs') return search.get('summary') === '1' ? store.listRunPage({ projectId: search.get('projectId'), limit: search.get('limit') || 50, before: search.get('before') }) : { runs: store.listRuns(search.get('projectId')) };
   const runMatch = pathname.match(/^\/api\/runs\/([^/]+)(\/retry)?$/);
   if (runMatch) {
     const id = decodeURIComponent(runMatch[1]);
@@ -142,7 +143,7 @@ async function api(method, pathname, search, body, store, coordinator, ctx) {
   if (method === 'GET' && pathname === '/api/events') return { events: store.listEvents(search.get('limit')).filter(e => !search.get('projectId') || e.projectId === search.get('projectId')) };
   if (method === 'POST' && pathname === '/api/events' && ctx.debug) return { event: store.addEvent(body) };
   if (method === 'POST' && pathname === '/api/bridge/notify') { if (coordinator.consume) coordinator.drain(); return { accepted: true }; }
-  if (method === 'GET' && pathname === '/api/snapshot') return { projects: store.listProjects(), runs: store.listRuns(search.get('projectId')), events: store.listEvents(50), memories: coordinator.memories.list(), sharedScopes: store.state.sharedScopes };
+  if (method === 'GET' && pathname === '/api/snapshot') return { projects: store.listProjects(), ...(search.get('summary') === '1' ? store.listRunPage({ projectId: search.get('projectId'), limit: search.get('limit') || 50, before: search.get('before') }) : { runs: store.listRuns(search.get('projectId')) }), events: store.listEvents(50), memories: coordinator.memories.list(), sharedScopes: store.state.sharedScopes };
   throw httpError(404, 'NOT_FOUND', '接口不存在。');
 }
 

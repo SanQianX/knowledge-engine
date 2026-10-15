@@ -153,6 +153,15 @@ class EngineStore {
     return this.state.runs.find(r => r.runId === runId) || null;
   }
 
+  listRunPage({ projectId, limit = 50, before } = {}) {
+    limit = Number(limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || before != null && !/^[1-9]\d*$/.test(String(before))) throw Object.assign(new Error('运行分页参数无效。'), { status: 400, code: 'INVALID_ARGUMENT' });
+    const all = this.state.runs.filter(run => !projectId || run.projectId === projectId);
+    const rows = all.filter(run => before == null || run.sequence < Number(before)).sort((a, b) => b.sequence - a.sequence);
+    const page = rows.slice(0, limit);
+    return { runs: page.map(summaryRun), nextCursor: rows.length > limit ? String(page.at(-1).sequence) : null, total: all.length };
+  }
+
   addRun(input) {
     if (!/^[a-f0-9]{40}$/i.test(input.commitSha || '')) throw Object.assign(new Error('必须提供完整的真实提交 SHA。'), { status: 400, code: 'INVALID_ARGUMENT' });
     const prior = this.state.runs.find(r => r.projectId === input.projectId && r.commitSha === input.commitSha.toLowerCase());
@@ -242,4 +251,7 @@ class EngineStore {
 
 function initialRuntime(project = {}) { return { lastAnalyzedCommit: project.trackingStartCommit || null, conversationBaselineCursor: project.conversationBaselineCursor ?? null, conversationBaselineCursors: project.conversationBaselineCursors || {}, consumedRequirements: [], analysis: { status: 'idle', activeClaim: null, lastError: null }, index: { generation: 0, dirty: false, status: 'pending' } }; }
 
-module.exports = { EngineStore, initialRuntime };
+function summaryRun(run) {
+  return Object.fromEntries(['runId', 'projectId', 'commitSha', 'sequence', 'state', 'phase', 'trigger', 'startedAt', 'finishedAt', 'promotedAt', 'indexState', 'error', 'memoryCapture'].filter(key => run[key] !== undefined).map(key => [key, run[key]]));
+}
+module.exports = { EngineStore, initialRuntime, summaryRun };

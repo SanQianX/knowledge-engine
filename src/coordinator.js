@@ -96,15 +96,19 @@ class EngineCoordinator extends EventEmitter {
     this.pump();
     if (this.executionEnabled) for (const run of this.store.state.runs.filter(r => r.state === 'index-pending')) this.retry(run.runId);
   }
-  async activate() {
+  async activate(projectIds) {
     await this.ready;
-    if (this.executionEnabled && this.consume) return;
-    await this.promotion.recoverAll();
+    const allowed = projectIds ? new Set(projectIds) : null;
+    const wasEnabled = this.executionEnabled && this.consume;
+    const newlyAllowed = allowed ? new Set([...allowed].filter(id => !this.allowedProjects?.has(id))) : null;
+    if (wasEnabled && newlyAllowed?.size === 0) { this.allowedProjects = allowed; this.pump(); return; }
+    await this.promotion.recoverAll(wasEnabled ? newlyAllowed : allowed);
+    this.allowedProjects = allowed;
     this.executionEnabled = true;
     this.consume = true;
     await this.drain();
     if (!this.poll) { this.poll = setInterval(() => this.drain(), 2000); this.poll.unref(); }
-    for (const run of this.store.state.runs.filter(r => r.state === 'index-pending')) this.retry(run.runId);
+    for (const run of this.store.state.runs.filter(r => r.state === 'index-pending' && (!allowed || allowed.has(r.projectId)))) this.retry(run.runId);
     this.pump();
   }
   enqueue(input) {
@@ -190,7 +194,7 @@ class EngineCoordinator extends EventEmitter {
   }
   pump() {
     if (this.closed || !this.executionEnabled) return;
-    const queued = this.store.state.runs.filter(r => r.state === 'queued').sort((a, b) => a.sequence - b.sequence);
+    const queued = this.store.state.runs.filter(r => r.state === 'queued' && (!this.allowedProjects || this.allowedProjects.has(r.projectId))).sort((a, b) => a.sequence - b.sequence);
     for (const run of queued) {
       if (this.active.size >= this.concurrency) break;
       if (this.active.has(run.projectId)) continue;
