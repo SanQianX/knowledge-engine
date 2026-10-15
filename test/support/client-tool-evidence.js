@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 function decodeResult(text) {
   try { return { body: JSON.parse(text), projection: 'complete' }; } catch {}
-  // OpenCode deliberately persists at most 4000 display characters. Only a
+  // Workbench deliberately persists at most 4000 tool display characters. Only a
   // complete first citation from that exact boundary can vouch for the call.
   assert.equal(text.length, 4000, 'malformed tool output is not a display prefix');
   const match = /"results"\s*:\s*\[\s*/.exec(text);
@@ -54,4 +54,4 @@ function verifyClientToolEvidence(events, { projectId, commitSha }) {
   assert.ok(row, 'current-project entry and full commit citation required');
   return { projectId, commitSha, entryId: row.entry_id, backend: body.backend, projection, toolUseId: result.id };
 }
-module.exports = { verifyClientToolEvidence };
+module.exports = { decodeResult, verifyClientToolEvidence };

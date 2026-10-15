@@ -92,10 +92,9 @@ async function main() {
     }
     assert.ok(snapshot.session.state === 'idle' || priorTask && snapshot.session.state === 'aborted');
     const tools = snapshot.events.filter(e => ['claude/tool-use', 'claude/tool-result'].includes(e.type));
-    const readAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes('project-knowledge-kb.js'));
-    const evidenceAt = tools.findIndex(e => e.type === 'claude/tool-result' && JSON.stringify(e).includes('hybrid+markdown-truth') && JSON.stringify(e).includes(prior.commitSha));
-    const writeAt = tools.findIndex(e => e.type === 'claude/tool-use' && JSON.stringify(e).includes(files[0]) && !JSON.stringify(e).includes('project-knowledge-kb.js'));
-    assert.ok(readAt >= 0 && evidenceAt > readAt && writeAt > evidenceAt, 'actual retrieval must precede code changes');
+    // verifySecondaryEvidence below checks matching successful tool IDs and
+    // actual Write/Edit ordering. A valid exact-commit fact need not have
+    // a vector hit; independent vector gates remain mandatory.
     assert.deepEqual(git(['status', '--porcelain']).split('\n').map(line => line.slice(3)).sort(), [...files, ...retainedProbes.map(p => p.file)].sort());
     for (const probe of retainedProbes) assert.equal(crypto.createHash('sha256').update(fs.readFileSync(path.join(root, probe.file))).digest('hex'), probe.hash, 'prior failed probes must remain byte-identical');
     proof.retainedPriorProbes = retainedProbes;

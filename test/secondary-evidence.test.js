@@ -15,7 +15,7 @@ test('secondary acceptance validates actual knowledge origins, not an unrelated 
   const latest = 'a'.repeat(40), origin = 'b'.repeat(40), entryId = 'changes/bbbbbbbbbbbb.md';
   const sample = () => ({ projectId: 'project-a', latestCommit: latest, file: 'policy.js', source: `// ${entryId}\n// commitSha ${origin}`, entry: { ok: true, projectId: 'project-a', entryId, chunks: [{ chunk_text: `${origin}\nKnowledge has one writer: the engine promotion path.` }] }, events: [
     { type: 'claude/tool-use', id: 'latest', input: { command: `node project-knowledge-kb.js search --project project-a --query ${latest}` } },
-    { type: 'claude/tool-result', id: 'latest', isError: false, output: `hybrid+markdown-truth ${latest}` },
+    { type: 'claude/tool-result', id: 'latest', isError: false, output: JSON.stringify({ ok: true, projectId: 'project-a', source: 'knowledge-retrieval-service', backend: 'hybrid+markdown-truth', query: latest, results: [{ scope_project_id: 'project-a', entry_id: 'changes/aaaaaaaaaaaa.md', commitSha: latest }] }) },
     { type: 'claude/tool-use', id: 'origin', input: { command: 'node project-knowledge-kb.js search --project project-a --query single-writer' } },
     { type: 'claude/tool-result', id: 'origin', isError: false, output: `${entryId} ${origin}` },
     { type: 'claude/tool-use', name: 'Write', input: { file_path: 'D:/test/policy.js' } },
@@ -23,6 +23,13 @@ test('secondary acceptance validates actual knowledge origins, not an unrelated 
   ] });
   const good = verifySecondaryEvidence(sample());
   assert.equal(good.commitSha, origin); assert.equal(good.latestQueriedCommit, latest);
+  let factual = sample();
+  factual.events[1].output = factual.events[1].output.replace('hybrid+markdown-truth', 'markdown-hybrid-fallback');
+  assert.equal(verifySecondaryEvidence(factual).commitSha, origin);
+  for (const change of [body => { body.projectId = 'project-other'; }, body => { body.source = 'echo'; }, body => { body.results[0].commitSha = 'c'.repeat(40); }, body => { body.results[0].scope_project_id = 'project-other'; }, body => { body.backend = 'made-up'; }]) {
+    const invalid = sample(), body = JSON.parse(invalid.events[1].output); change(body); invalid.events[1].output = JSON.stringify(body);
+    assert.throws(() => verifySecondaryEvidence(invalid));
+  }
   let bad = sample(); bad.source = bad.source.replace(origin, 'c'.repeat(40)); assert.throws(() => verifySecondaryEvidence(bad), /pre-edit/);
   bad = sample(); bad.events[2].input.command = 'echo project-knowledge-kb.js --project other'; assert.throws(() => verifySecondaryEvidence(bad), /pre-edit/);
   bad = sample(); bad.events[3].isError = true; assert.throws(() => verifySecondaryEvidence(bad), /pre-edit/);
@@ -44,6 +51,8 @@ test('real model Chinese citation labels parse like English ones', () => {
     `// ${entryId} 提交SHA：${sha}`,
     `// ${entryId} 提交SHA: ${sha}`,
     `// ${entryId} 提交sha=${sha}`,
+    `// ${entryId} (commitSha\n// ${sha})`,
+    `// ${entryId} (commitSha\r\n// ${sha})`,
   ];
   for (const source of positives) {
     assert.deepEqual(citedEntry(source), { entryId, commitSha: sha });
