@@ -55,6 +55,7 @@ async function main() {
   const token = crypto.randomBytes(32).toString('hex');
   process.env.KB_MODULES_AUTOSTART = '0'; process.env.KB_MODULES_REGISTER = '1';
   process.env.KB_DATA_DIR = path.join(root, 'shell');
+  process.env.KB_KNOWLEDGE_DATA_DIR = process.env.KB_DATA_DIR;
   const productLogger = new Logger({ layout: new StorageLayout({ dataDir: process.env.KB_DATA_DIR }) });
   process.env.AI_CODING_EVENT_BRIDGE_HOME = path.join(root, 'events');
   process.env.AI_CODING_EVENT_BRIDGE_MODULE = path.join(bridgePackage, 'src/bridge');
