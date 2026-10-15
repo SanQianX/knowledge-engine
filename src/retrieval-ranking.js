@@ -115,6 +115,14 @@ function rank(candidates, query, scoreIdentity, options = {}) {
     const words = new Set(terms(c.chunkText.replace(/^#+.*$/gm, '')).main);
     if (prior.length >= 2 || prior.some(row => {
       if (row.contentHash === c.contentHash) return true;
+      // Both offsets were verified against the same current body. A vector
+      // substring and its containing Markdown chunk are one fact, even when
+      // the small substring has low token-set similarity to the full section.
+      const positioned = row.bodyHash && row.bodyHash === c.bodyHash
+        && Number.isInteger(row.startPos) && Number.isInteger(row.endPos) && row.startPos >= 0 && row.endPos > row.startPos
+        && Number.isInteger(c.startPos) && Number.isInteger(c.endPos) && c.startPos >= 0 && c.endPos > c.startPos;
+      const smallSlice = Math.min(row.endPos - row.startPos, c.endPos - c.startPos) * 2 < Math.max(row.endPos - row.startPos, c.endPos - c.startPos);
+      if (positioned && smallSlice && (row.startPos <= c.startPos && row.endPos >= c.endPos || c.startPos <= row.startPos && c.endPos >= row.endPos)) return true;
       const others = new Set(terms(row.chunkText.replace(/^#+.*$/gm, '')).main);
       const common = [...words].filter(w => others.has(w)).length;
       return common / Math.max(1, new Set([...words, ...others]).size) >= 0.9;

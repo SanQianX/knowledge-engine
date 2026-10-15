@@ -110,6 +110,50 @@ test('known commit plus a Chinese topic delivers the actual English patch fact, 
   assert.equal(fs.readFileSync(path.join(f.projects[0].knowledgePath, entryId), 'utf8'), before);
 });
 
+test('a vector slice contained in a canonical chunk cannot consume its complementary evidence slot', async t => {
+  const commitSha = '9aec087aa15574a3a9aecd9945ed0d62aba82d9b', entryId = 'changes/9aec087aa155.md';
+  const first = '- 该文件位于仓库根目录，只有一行英文文本，内容由仓库内文本自身承载，未被任何源码、构建脚本或配置引用。';
+  const text = `# 提交 9aec087a 新增 knowledge-policy-rc6-leader1.txt\n\n提交 ${commitSha} 新增文件 knowledge-policy-rc6-leader1.txt（+1/-0）。\n\n## Patch 证据\n\nPatch 全文为一次新增（新增 1 行，无删除）：\n\n\`\`\`diff\ndiff --git a/knowledge-policy-rc6-leader1.txt b/knowledge-policy-rc6-leader1.txt\nnew file mode 100644\nindex 0000000..b842095\n--- /dev/null\n+++ b/knowledge-policy-rc6-leader1.txt\n@@ -0,0 +1 @@\n+Knowledge has one writer: the engine promotion path. Preserve native workbench streaming and keep the product simple.\n\`\`\`\n\n## 事实记录\n\n${first}\n- 本次冻结证据未包含需求上下文与 AI 对话记录，因此无法判断用户需求与该提交是否一致，也无法推断业务目的；此处只记录 Patch 可证明的变化。\n- Patch 中的 blob 标识为 b842095，与提交 6b8f0683e709 新增 knowledge-policy-scoped-memory.txt 时的 blob 标识相同，说明两个文件内容逐字节一致；这是基于 Patch 头部的可验证事实，而非命名意图的推测。\n- 提交 subject 为 acceptance: knowledge-policy-rc6-leader1.txt，与实际变更文件名一致，属于验收动作而非功能实现。\n- 本次提交未触及任何源码文件、测试或 CI 配置，也未删除或修改任何既有文件。\n`;
+  const f = await fixture(t, { 'project-recipe': { [entryId]: text } });
+  f.runs.push({ projectId: 'project-recipe', commitSha, promotedAt: '2026-10-15T00:00:00Z', staging: { operations: [{ path: entryId }] } });
+  const vector = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ resultLevel: 'chunk', model: 'mock', results: [{ project: 'project-recipe', uri: entryId, score: 0.95, scoreType: 'cosine',
+      startPos: text.indexOf(first), endPos: text.indexOf(first) + first.length, bodyHash: crypto.createHash('sha256').update(text).digest('hex') }] }));
+  });
+  await new Promise(resolve => vector.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => vector.close(resolve)));
+  f.retrieval.vectorUrl = `http://127.0.0.1:${vector.address().port}`; delete f.retrieval.recallIndex;
+  const query = `请先参考注入的项目知识，简要说明提交 ${commitSha} 的策略文本怎样描述知识写入职责，引用其中的英文原句和完整提交；区分策略声明与已实现功能，不要推测。不要调用工具或修改文件。查询关键词：知识、提交、引擎、单写者、${commitSha}。`;
+  const result = await f.retrieval.search({ projectId: 'project-recipe', query, limit: 5 });
+  assert.ok(result.results.some(r => r.chunk_text.includes('Knowledge has one writer')), 'a contained slice is duplicate evidence, not a second complementary fact');
+  assert.ok(result.results.length <= 2);
+  assert.ok(result.results.every((r, i, rows) => !i || rows[i - 1].score >= r.score));
+  const memories = { store: { state: { memories: [] } }, brainScope: () => null, applicable: () => false };
+  const context = await new EngineContext({ retrieval: f.retrieval, memories }).prepare({ projectId: 'project-recipe', query });
+  assert.ok(context.facts.some(r => r.text.includes('Knowledge has one writer') && r.commitSha === commitSha));
+  assert.ok(context.prompt.length <= 8000);
+});
+
+test('contained verified ranges count once even when their token-set Jaccard is low', () => {
+  const { rank } = require('../src/retrieval-ranking');
+  const first = '策略文本需要引用完整提交。';
+  const body = first + '不同的事实背景和未触及源码的限制。'.repeat(30);
+  const candidate = (id, text, start, end) => ({ recordId: id, spaceId: 'project:p', entryId: 'changes/c.md', title: '', headingPath: [],
+    chunkText: text, contentHash: crypto.createHash('sha256').update(text).digest('hex'), bodyHash: 'same-current-body',
+    startPos: start, endPos: end, scopeReason: 'primary' });
+  const rows = [candidate('facts', body, 200, 200 + body.length), candidate('vector', first, 200, 200 + first.length),
+    candidate('patch', 'Knowledge has one writer: the engine promotion path.', 0, 51)];
+  const selected = rank(rows, '策略文本 引用 完整提交', () => ({ selectionSignals: ['exact-commit'] }));
+  assert.ok(selected.some(c => c.recordId === 'patch'), 'a contained vector range cannot occupy the second document slot');
+  assert.equal(selected.length, 2);
+  assert.ok(selected.every((r, i) => !i || selected[i - 1].relevanceScore >= r.relevanceScore));
+  for (const invalid of [{ bodyHash: 'different-current-body' }, { startPos: -1, endPos: -1 }, { startPos: 800, endPos: 800 + first.length }]) {
+    const independent = rows.map(c => ({ ...c, ...(c.recordId === 'vector' ? invalid : {}) }));
+    const retained = rank(independent, '策略文本 引用 完整提交', () => ({ selectionSignals: ['exact-commit'] }));
+    assert.ok(!retained.some(c => c.recordId === 'patch'), 'unknown, different or disjoint positions must not claim containment');
+  }
+});
+
 test('explicit project/domain scope remains inclusive but never leaks other-domain facts', async t => {
   const f = await fixture(t, { 'project-recipe': { 'README.md': '# 导出校验\n\n导出前校验配方参数。' },
     'project-review': { 'README.md': '# 导出校验\n\n导出前校验报表参数。' }, 'project-other': { 'README.md': '# 导出校验\n\n导出前校验参数。' } });

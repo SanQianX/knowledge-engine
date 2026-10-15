@@ -49,6 +49,35 @@ test('plain development requests prepare authoritative facts and non-keyword con
   assert.ok(!JSON.stringify(f.logs).includes('Implement export')); assert.ok(!JSON.stringify(f.logs).includes('对外错误信息使用中文'));
 });
 
+test('an explicit commit includes its small complete current evidence without exceeding the task budget', async t => {
+  const f = await fixture(t);
+  const crypto = require('node:crypto'), { CHUNKER_VERSION } = require('../src/runtime/markdown-knowledge-indexer');
+  const digest = text => crypto.createHash('sha256').update(text).digest('hex');
+  const entryId = 'changes/commit.md', commitSha = 'a'.repeat(40);
+  const full = '# Commit evidence\n\n## Metadata\n\nThis is an acceptance text, not an implemented feature.\n\n## Patch\n\nKnowledge has one writer: the engine promotion path.\n';
+  const file = path.join(f.store.getProject('project-a').knowledgePath, entryId);
+  fs.mkdirSync(path.dirname(file)); fs.writeFileSync(file, full);
+  let ordinary = false, changed = false, large = false;
+  f.retrieval.search = async () => ({ results: [{ scope_project_id: 'project-a', space_id: 'project:project-a', entry_id: entryId,
+    title: 'Commit evidence', chunk_text: 'This is an acceptance text, not an implemented feature.', commitSha,
+    document_hash: digest(`chunker:${CHUNKER_VERSION}\n${full}${large ? ' large'.repeat(1000) : ''}`), match_channels: ordinary ? ['lexical:bm25'] : ['exact-commit'] }], health: { index: 'ok' } });
+  const get = f.retrieval.get.bind(f.retrieval);
+  f.retrieval.get = async input => { const result = await get(input); if (changed) result.chunks[0].chunk_text += ' changed'; if (large) result.chunks[0].chunk_text += ' large'.repeat(1000); return result; };
+  const first = await f.context.prepare({ projectId: 'project-a', query: `Explain the policy in ${commitSha}`, sessionId: 'specific-commit', client: 'codex' });
+  assert.equal(first.facts.length, 1); assert.ok(first.facts[0].text.includes('Knowledge has one writer'));
+  assert.ok(first.prompt.length <= 8000); assert.equal(fs.readFileSync(file, 'utf8'), full);
+  const followup = await f.context.prepare({ projectId: 'project-a', query: '继续', sessionId: 'specific-commit', client: 'codex' });
+  assert.ok(followup.facts.some(row => row.text.includes('Knowledge has one writer')));
+  for (const flag of ['ordinary', 'changed', 'large']) {
+    ordinary = flag === 'ordinary'; changed = flag === 'changed'; large = flag === 'large';
+    const result = await f.context.prepare({ projectId: 'project-a', query: `Explain ${commitSha}` });
+    assert.ok(!result.facts.some(row => row.text.includes('Knowledge has one writer')), flag + ' must retain the bounded validated snippet');
+  }
+  ordinary = changed = large = false;
+  f.retrieval.get = async input => { const result = await get(input); f.store.getProject('project-a').domainId = 'moved-domain'; return result; };
+  await assert.rejects(f.context.prepare({ projectId: 'project-a', query: `Explain ${commitSha}` }), { code: 'PROJECT_SCOPE_CHANGED' });
+});
+
 test('scope checks precede memory preparation; edits and pending file writes never reuse old context', async t => {
   const f = await fixture(t), candidate = f.capture('未确认偏好');
   assert.equal((await f.context.prepare({ projectId: 'project-a', query: 'export' })).memories.length, 0);
