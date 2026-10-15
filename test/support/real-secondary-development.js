@@ -6,7 +6,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const AtomicFile = require('../../src/runtime/atomic-file');
-const { citedEntry, verifySecondaryEvidence } = require('./secondary-evidence');
+const { citedEntry, verifySecondaryEvidence, verifyCompletedTeardown } = require('./secondary-evidence');
 
 async function main() {
   const environment = JSON.parse(fs.readFileSync(path.resolve(process.argv[2]), 'utf8'));
@@ -84,8 +84,7 @@ async function main() {
       assert.ok(!error, error?.message || error?.result);
       if (snapshot.session.state === 'idle' && snapshot.events.at(-1)?.type === 'claude/turn-end') break;
       if (priorTask && !repairCitation && snapshot.session.state === 'aborted') {
-        const states = snapshot.events.filter(event => event.type === 'claude/state');
-        assert.equal(states.at(-1)?.reason, 'no-active-subprocess'); assert.equal(states.at(-2)?.state, 'idle');
+        verifyCompletedTeardown(snapshot.events);
         proof.sessionTeardown = 'original harness aborted an already completed turn'; break;
       }
       await new Promise(resolve => setTimeout(resolve, 1500));

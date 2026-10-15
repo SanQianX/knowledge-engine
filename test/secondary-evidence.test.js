@@ -1,7 +1,17 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { citedEntry, verifySecondaryEvidence } = require('./support/secondary-evidence');
+const { citedEntry, verifySecondaryEvidence, verifyCompletedTeardown } = require('./support/secondary-evidence');
+
+test('repeated no-subprocess teardown preserves a completed task but cannot excuse an interrupted task', () => {
+  const finished = [{ type: 'claude/result', isError: false }, { type: 'claude/state', state: 'idle' }, { type: 'claude/turn-end' }];
+  const stopped = { type: 'claude/state', state: 'aborted', reason: 'no-active-subprocess' };
+  verifyCompletedTeardown([...finished, stopped, stopped]);
+  assert.throws(() => verifyCompletedTeardown([...finished, { ...stopped, reason: 'killed' }]));
+  assert.throws(() => verifyCompletedTeardown([{ type: 'claude/state', state: 'running' }, stopped]));
+  assert.throws(() => verifyCompletedTeardown([{ type: 'claude/state', state: 'idle' }, stopped]));
+  assert.throws(() => verifyCompletedTeardown([{ type: 'claude/result', isError: true }, ...finished.slice(1), stopped]));
+});
 
 test('real model citations accept commit and commitSha labels without requiring fixed wording', () => {
   const sha = 'd'.repeat(40), entryId = 'changes/dddddddddddd.md';

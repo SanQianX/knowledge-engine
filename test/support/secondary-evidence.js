@@ -12,6 +12,16 @@ function citedEntry(source) {
   return { entryId, commitSha };
 }
 
+function verifyCompletedTeardown(events) {
+  const states = events.filter(event => event.type === 'claude/state');
+  let last = states.length - 1;
+  assert.equal(states[last]?.state, 'aborted');
+  while (last >= 0 && states[last].state === 'aborted' && states[last].reason === 'no-active-subprocess') last--;
+  assert.equal(states[last]?.state, 'idle', 'only an already completed task may survive harness teardown');
+  assert.ok(events.some(event => event.type === 'claude/turn-end'));
+  assert.equal(events.findLast(event => event.type === 'claude/result')?.isError, false);
+}
+
 function verifySecondaryEvidence({ events, source, projectId, latestCommit, file, entry }) {
   const citation = citedEntry(source);
   const writeAt = events.findIndex(event => event.type === 'claude/tool-use' && ['Write', 'Edit'].includes(event.name) && String(event.input?.file_path || '').replace(/\\/g, '/').endsWith('/' + file));
@@ -43,4 +53,4 @@ function verifySecondaryEvidence({ events, source, projectId, latestCommit, file
   return { ...citation, latestQueriedCommit: latestCommit, latestBackend: body.backend, latestProjection: projection, knowledgeHash: crypto.createHash('sha256').update(text).digest('hex'), receipts: receipts.map(receipt => ({ toolId: receipt.use.id, useSequence: receipt.use.sequence, resultSequence: receipt.result.sequence })) };
 }
 
-module.exports = { citedEntry, verifySecondaryEvidence };
+module.exports = { citedEntry, verifySecondaryEvidence, verifyCompletedTeardown };
