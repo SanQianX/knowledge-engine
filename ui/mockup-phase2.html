@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>knowledge-engine · 调试台（阶段② 完工预览稿）</title>
+<style>
+/* 设计 token 与现网 app.css 完全一致（灰阶四层 + 单一蓝 + 语义红绿），新增样式只加不改 */
+:root {
+  --bg-side: #1b1c1f;
+  --bg-main: #212226;
+  --bg-card: #2a2b30;
+  --bg-input: #333439;
+  --bg-hover: #303237;
+  --bg-active: #36383e;
+  --line: #3a3b40;
+  --line-soft: #2e2f34;
+  --text: #e8e8ea;
+  --text-2: #a0a1a5;
+  --text-3: #6b6c70;
+  --label: #8a8b90;
+  --blue: #3b82f6;
+  --blue-soft: rgba(59,130,246,.12);
+  --green: #34d399;
+  --red: #e5695e;
+  --amber: #e0a34e;
+  --mono: Consolas, "Microsoft YaHei", monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; transition: background-color .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-main); color: var(--text);
+  font: 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  overflow: hidden; color-scheme: dark;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #45464b; border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+.hidden { display: none !important; }
+.mono { font-family: var(--mono); font-size: 12px; color: var(--text-2); }
+
+#app { height: 100%; display: flex; }
+aside { width: 220px; min-width: 220px; background: var(--bg-side); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; }
+.brand { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; }
+.brand .mark { width: 22px; height: 22px; border-radius: 6px; background: var(--text); color: #16171a; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px; }
+.brand .name { font-size: 12.5px; font-weight: 600; line-height: 1.3; }
+.brand .name em { font-style: normal; color: var(--amber); font-weight: 400; display: block; font-size: 11px; }
+
+.nav { flex: 1; padding: 4px 8px; overflow-y: auto; }
+.nav-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border-radius: 6px; color: var(--text-2); font-size: 12.5px; }
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.on { background: var(--bg-active); color: var(--text); }
+.side-foot { padding: 12px 14px; display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 12px; border-top: 1px solid var(--line-soft); }
+.dot { width: 7px; height: 7px; border-radius: 99px; background: var(--red); flex-shrink: 0; }
+.dot.up { background: var(--green); }
+
+main { flex: 1; overflow-y: auto; padding: 16px 24px 40px; }
+.view { display: none; max-width: 1080px; }
+.view.on { display: block; }
+h1 { font-size: 16px; font-weight: 600; margin-bottom: 14px; }
+
+/* 预览稿横幅（仅本稿有） */
+.preview-banner { display: flex; align-items: center; gap: 8px; background: rgba(224,163,78,.08); border: 1px solid rgba(224,163,78,.35); color: var(--amber); border-radius: 8px; padding: 7px 12px; font-size: 12px; margin-bottom: 14px; }
+
+.cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.card { background: var(--bg-card); border: 1px solid var(--line-soft); border-radius: 8px; padding: 12px 16px; min-width: 130px; }
+.card-num { font-size: 22px; font-weight: 600; font-family: var(--mono); }
+.card-label { font-size: 11px; color: var(--label); margin-top: 2px; }
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+.panel { background: var(--bg-card); border: 1px solid var(--line-soft); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; overflow-x: auto; }
+.panel-title { font-size: 12.5px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.panel-sub { font-size: 11px; color: var(--label); margin: 10px 0 6px; }
+.stack > .panel { margin-bottom: 12px; }
+.stack > .panel:last-child { margin-bottom: 0; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th { text-align: left; font-size: 11px; color: var(--label); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tbody tr.click { cursor: pointer; }
+tbody tr.click:hover { background: var(--bg-hover); }
+tbody tr.sel { background: var(--bg-active); }
+.empty { color: var(--text-3); text-align: center; padding: 14px 0; }
+td.wrap { word-break: break-all; min-width: 160px; }
+tbody td:first-child { white-space: nowrap; }
+
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.hint { font-size: 11.5px; color: var(--text-3); flex: 1; }
+
+.btn { border: 1px solid var(--line); border-radius: 6px; padding: 5px 12px; font-size: 12.5px; color: var(--text-2); background: var(--bg-card); }
+.btn:hover { background: var(--bg-hover); color: var(--text); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.primary:hover { opacity: .9; }
+.btn.danger:hover { color: var(--red); border-color: var(--red); background: rgba(229,105,94,.08); }
+
+select, input { background: var(--bg-input); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12.5px; outline: none; }
+select:focus, input:focus { border-color: var(--blue); }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--label); flex: 1; }
+.form .form-row { display: flex; gap: 10px; margin-bottom: 10px; }
+.form .checkbox { flex-direction: row; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); flex: 0; }
+.form-actions { display: flex; gap: 8px; }
+
+.badge { display: inline-block; font-size: 11px; font-family: var(--mono); border-radius: 99px; padding: 0 8px; line-height: 18px; white-space: nowrap; }
+.badge.queued { color: var(--blue); background: var(--blue-soft); }
+.badge.running { color: var(--blue); background: var(--blue-soft); animation: pulse 1.2s ease infinite; }
+.badge.succeeded { color: var(--green); background: rgba(52,211,153,.12); }
+.badge.failed { color: var(--red); background: rgba(229,105,94,.12); }
+.badge.type { color: var(--text-2); border: 1px solid var(--line); }
+.badge.idle { color: var(--text-2); border: 1px solid var(--line); }
+.badge.advanced { color: var(--green); background: rgba(52,211,153,.12); }
+.badge.completed { color: var(--green); background: rgba(52,211,153,.12); }
+.badge.evidence { color: var(--blue); background: var(--blue-soft); }
+.badge.applying { color: var(--blue); background: var(--blue-soft); animation: pulse 1.2s ease infinite; }
+.badge.rolled { color: var(--red); background: rgba(229,105,94,.12); }
+.badge.fake { color: var(--amber); background: rgba(224,163,78,.12); }
+.badge.conflict { color: var(--red); background: rgba(229,105,94,.12); }
+@keyframes pulse { 50% { opacity: .55; } }
+
+.kv { font-size: 12.5px; }
+.kv div { display: flex; gap: 10px; padding: 3px 0; }
+.kv dt { width: 150px; color: var(--label); flex-shrink: 0; }
+.kv dd { word-break: break-all; }
+.code { background: var(--bg-side); border: 1px solid var(--line-soft); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; color: var(--text-2); max-height: 340px; overflow-y: auto; }
+.code .lg-ok { color: var(--green); }
+.code .lg-err { color: var(--red); }
+.code .lg-dim { color: var(--text-3); }
+.code .lg-tag { color: var(--blue); }
+.answer { font-size: 12.5px; white-space: pre-wrap; color: var(--text); }
+.citations { padding-left: 20px; font-size: 12px; color: var(--text-2); }
+.score { font-family: var(--mono); color: var(--blue); }
+
+/* 阶段时间线（新增组件） */
+.timeline { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
+.tstep { display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; min-width: 86px; }
+.tstep .t-name { font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+.tstep .t-time { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+.tstep.done { border-color: rgba(59,130,246,.45); background: var(--blue-soft); }
+.tstep.done .t-name { color: var(--blue); }
+.tstep.current { border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.08); animation: pulse 1.2s ease infinite; }
+.tstep.current .t-name { color: var(--green); }
+.tstep.failed { border-color: rgba(229,105,94,.5); background: rgba(229,105,94,.08); }
+.tstep.failed .t-name { color: var(--red); }
+.tarrow { align-self: center; color: var(--text-3); font-size: 11px; }
+
+/* 语义提示块（新增组件） */
+.notice { border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.55; }
+.notice.err { background: rgba(229,105,94,.08); border: 1px solid rgba(229,105,94,.35); color: var(--red); }
+.notice.info { background: var(--blue-soft); border: 1px solid rgba(59,130,246,.35); color: var(--text-2); }
+.notice.warn { background: rgba(224,163,78,.08); border: 1px solid rgba(224,163,78,.35); color: var(--amber); }
+.notice b { color: inherit; }
+
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--bg-card); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 16px; font-size: 12.5px; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="brand">
+      <div class="mark">KE</div>
+      <div class="name">knowledge-engine <em>调试台 · 阶段② 预览稿</em></div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item on" data-view="overview">概览</button>
+      <button class="nav-item" data-view="projects">项目</button>
+      <button class="nav-item" data-view="runs">分析运行</button>
+      <button class="nav-item" data-view="retrieval">检索调试</button>
+      <button class="nav-item" data-view="events">事件流</button>
+    </nav>
+    <div class="side-foot">
+      <span class="dot up"></span>
+      <span>v0.2.0 · 游标 142</span>
+    </div>
+  </aside>
+
+  <main>
+    <div class="preview-banner">⚑ 阶段②「拆触发」完工预览稿 —— 触发面已接真（对账 → 无头分析会话 → staging 校验 → 晋升）；检索面仍为阶段① stub。本页全部为静态演示数据，仅用于确认调试台改版样式。</div>
+
+    <!-- 概览 -->
+    <section id="view-overview" class="view on">
+      <h1>概览</h1>
+      <div class="cards">
+        <div class="card"><div class="card-num">3</div><div class="card-label">注册项目</div></div>
+        <div class="card"><div class="card-num">1</div><div class="card-label">进行中运行</div></div>
+        <div class="card"><div class="card-num">4</div><div class="card-label">累计成功</div></div>
+        <div class="card"><div class="card-num">2</div><div class="card-label">累计失败</div></div>
+        <div class="card"><div class="card-num">142</div><div class="card-label">journal 游标</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-title">最近运行</div>
+          <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>触发</th><th>状态</th><th>耗时</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">r-8f21c</td><td>knowledge-engine</td><td class="mono">3fa2b91</td><td class="mono">git-hook</td><td><span class="badge running">running</span></td><td class="mono">42.3s</td></tr>
+            <tr><td class="mono">r-7d04e</td><td>knowledge-engine</td><td class="mono">8c41aa2</td><td class="mono">git-hook</td><td><span class="badge succeeded">state.advanced</span></td><td class="mono">96.5s</td></tr>
+            <tr><td class="mono">r-6b99a</td><td>knowledge-engine</td><td class="mono">f00d3c1</td><td class="mono">manual-debug</td><td><span class="badge fake">succeeded · fake</span></td><td class="mono">0.4s</td></tr>
+            <tr><td class="mono">r-5c72f</td><td>quant-platform</td><td class="mono">b7a1d4e</td><td class="mono">git-hook</td><td><span class="badge failed">timeout</span></td><td class="mono">901.2s</td></tr>
+            <tr><td class="mono">r-4e18b</td><td>quant-platform</td><td class="mono">2ce95f7</td><td class="mono">git-hook</td><td><span class="badge failed">orphaned</span></td><td class="mono">1.2s</td></tr>
+          </tbody></table>
+        </div>
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-title">自动化</div>
+            <dl class="kv">
+              <div><dt>hook 端点</dt><dd class="mono">POST /api/hooks/post-commit → 202</dd></div>
+              <div><dt>运行模式</dt><dd>SDK 会话 <span class="mono">（KB_AUTOMATION_FAKE_CLAUDE 未启用）</span></dd></div>
+              <div><dt>Agent SDK</dt><dd class="mono">@anthropic-ai/claude-agent-sdk 0.2.141 · 宿主解析</dd></div>
+              <div><dt>整体超时</dt><dd class="mono">KB_AUTOMATION_TIMEOUT_MS = 900000</dd></div>
+              <div><dt>瞬态重试</dt><dd class="mono">max 2 次 · base 1000ms 指数退避</dd></div>
+              <div><dt>stale 清扫</dt><dd class="mono">KB_STALE_ACTIVE_MS = 300000 · 每 30s</dd></div>
+            </dl>
+          </div>
+          <div class="panel">
+            <div class="panel-title">服务信息</div>
+            <dl class="kv">
+              <div><dt>版本</dt><dd class="mono">0.2.0</dd></div>
+              <div><dt>uptime</dt><dd class="mono">2h 14m</dd></div>
+              <div><dt>数据目录</dt><dd class="mono">D:\SanQian.Xu\knowledge-engine\data</dd></div>
+              <div><dt>journal 消费者</dt><dd>knowledge-engine（stub：本地 store，阶段③ 接 event-bridge）</dd></div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 项目 -->
+    <section id="view-projects" class="view">
+      <h1>项目</h1>
+      <div class="toolbar">
+        <span class="hint">AI profile 由 shell 注册时下发，仅存内存、不落盘；服务重启后需重新下发。</span>
+        <button class="btn primary" data-toast="预览稿：注册表单与现网一致，新增 AI profile 说明。">注册项目</button>
+      </div>
+      <div class="panel">
+        <table><thead><tr><th>项目ID</th><th>名称</th><th>仓库路径</th><th>知识库路径</th><th>lastAnalyzedCommit</th><th>分析状态</th><th>AI profile</th><th></th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">knowledge-engine</td><td>知识引擎</td>
+            <td class="mono wrap">D:\SanQian.Xu\knowledge-engine</td>
+            <td class="mono wrap">D:\SanQian.Xu\knowledge-engine\.knowledge</td>
+            <td class="mono">8c41aa2</td>
+            <td><span class="badge advanced">state.advanced</span></td>
+            <td><span class="badge queued">已下发 · 仅内存</span></td>
+            <td><button class="btn danger" data-toast="预览稿：摘除走 keep-data 语义，知识树与运行历史不删。">删除</button></td>
+          </tr>
+          <tr>
+            <td class="mono">quant-platform</td><td>量化平台</td>
+            <td class="mono wrap">D:\SanQian.Xu\quant-platform</td>
+            <td class="mono wrap">D:\SanQian.Xu\quant-platform\.knowledge</td>
+            <td class="mono">b7a1d4e</td>
+            <td><span class="badge failed">failed</span></td>
+            <td><span class="badge queued">已下发 · 仅内存</span></td>
+            <td><button class="btn danger" data-toast="预览稿：摘除走 keep-data 语义，知识树与运行历史不删。">删除</button></td>
+          </tr>
+          <tr>
+            <td class="mono">vector-hub</td><td>向量中枢</td>
+            <td class="mono wrap">D:\SanQian.Xu\vector-hub</td>
+            <td class="mono wrap">D:\SanQian.Xu\vector-hub\.knowledge</td>
+            <td class="mono">–</td>
+            <td><span class="badge idle">idle</span></td>
+            <td><span class="badge failed">未下发</span></td>
+            <td><button class="btn danger" data-toast="预览稿：摘除走 keep-data 语义，知识树与运行历史不删。">删除</button></td>
+          </tr>
+        </tbody></table>
+      </div>
+      <div class="panel">
+        <div class="panel-title">AI profile 缺失时的行为</div>
+        <div class="notice warn">对账器认领 commit 时校验 <b>resolveEffectiveAiProfile</b>：项目未下发 profile 则本次运行直接失败，错误码 <b class="mono">AI_PROFILE_REQUIRED</b>（retryable=false），不拉起分析会话。</div>
+      </div>
+    </section>
+
+    <!-- 分析运行 -->
+    <section id="view-runs" class="view">
+      <h1>分析运行</h1>
+      <div class="toolbar">
+        <select><option>全部项目</option><option>knowledge-engine</option><option>quant-platform</option></select>
+        <select><option>全部状态</option><option>running</option><option>state.advanced</option><option>failed</option></select>
+        <button class="btn primary" data-toast="预览稿：表单与现网一致（项目 / commit SHA / 备注 / 模拟失败态）。">模拟触发分析</button>
+        <button class="btn" data-toast="预览稿：以 hook-event/v2 schema 注入一条 post-commit 事件，走真管道入口。">注入 hook 事件</button>
+      </div>
+
+      <div class="panel">
+        <table><thead><tr><th>run</th><th>项目</th><th>commit</th><th>触发</th><th>状态</th><th>分析会话</th><th>journal</th><th>耗时</th></tr></thead>
+        <tbody id="runsBody"></tbody></table>
+      </div>
+
+      <div class="panel" id="runDetail">
+        <div class="panel-title">运行详情 <span class="mono" id="dRunId"></span></div>
+        <div id="dBody"></div>
+      </div>
+    </section>
+
+    <!-- 检索调试 -->
+    <section id="view-retrieval" class="view">
+      <h1>检索调试</h1>
+      <div class="panel form">
+        <div class="form-row">
+          <label>项目<select><option>knowledge-engine</option><option>quant-platform</option></select></label>
+          <label class="grow">查询<input value="commit 之后分析是怎么触发的"></label>
+          <label>limit<input type="number" value="5" min="1" max="30" class="w70" style="width:70px"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn primary" data-toast="预览稿：阶段① 接真 BM25 + 向量后，本页与返回结构零改动。">search</button>
+          <button class="btn" data-toast="预览稿：ask 仍为确定性拼接 + 引用，非 LLM 生成。">ask</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">search 结果</div>
+        <table><thead><tr><th>路径</th><th>标题</th><th>得分</th><th>摘要</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">README.md</td><td>README</td><td class="score">14</td><td class="wrap">…journal（8790，唯一入口）└─ knowledge-engine（5790，注册消费者）…</td></tr>
+          <tr><td class="mono">ARCHITECTURE.md</td><td>架构</td><td class="score">11</td><td class="wrap">…触发面：消费 event-bridge journal 的 commit boundary → CommitReconciler 对账/认领…</td></tr>
+          <tr><td class="mono">AGENTS.md</td><td>开发指南</td><td class="score">9</td><td class="wrap">…阶段② 完成标志：真 commit 在真仓库跑出等价晋升产物…</td></tr>
+        </tbody></table>
+      </div>
+      <div class="notice info">阶段② 不改检索面：本页在阶段① 接真 BM25 + 向量运行时之前保持 stub 行为，MCP 与 kb CLI 的迁移验收也在阶段①。</div>
+    </section>
+
+    <!-- 事件流 -->
+    <section id="view-events" class="view">
+      <h1>事件流</h1>
+      <div class="toolbar">
+        <span class="hint">阶段③ 将改为 event-bridge journal 的注册消费者游标；当前为本地 store。阶段② 起新增管道生命周期事件类型。</span>
+        <button class="btn" data-toast="预览稿：注入测试事件入口保留。">注入测试事件</button>
+      </div>
+      <div class="panel">
+        <table><thead><tr><th>seq</th><th>类型</th><th>项目</th><th>摘要</th><th>时间</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">142</td><td><span class="badge type">claude.session</span></td><td>knowledge-engine</td><td class="wrap">r-8f21c 会话运行中 · turns=3 · tokens in 9.1k / out 1.2k</td><td class="mono">10:02:11</td></tr>
+          <tr><td class="mono">141</td><td><span class="badge type">claim.prepared</span></td><td>knowledge-engine</td><td class="wrap">r-8f21c 认领 3fa2b91 · fingerprint sha256:77aa…c4（快照已冻结）</td><td class="mono">10:01:58</td></tr>
+          <tr><td class="mono">140</td><td><span class="badge type">commit-boundary</span></td><td>knowledge-engine</td><td class="wrap">git-hook 3fa2b91 · op_4d7e · branch main</td><td class="mono">10:01:57</td></tr>
+          <tr><td class="mono">139</td><td><span class="badge type">promotion.completed</span></td><td>knowledge-engine</td><td class="wrap">r-7d04e · 2 operations · lastAnalyzedCommit → 8c41aa2</td><td class="mono">09:22:34</td></tr>
+          <tr><td class="mono">138</td><td><span class="badge type">promotion.journal</span></td><td>knowledge-engine</td><td class="wrap">r-7d04e · applying · 备份 2 份 · verifyPromoted 通过</td><td class="mono">09:22:33</td></tr>
+          <tr><td class="mono">137</td><td><span class="badge type">claude.session</span></td><td>knowledge-engine</td><td class="wrap">r-7d04e 会话结束 · 83.2s · state=idle</td><td class="mono">09:22:31</td></tr>
+          <tr><td class="mono">133</td><td><span class="badge type">automation.timeout</span></td><td>quant-platform</td><td class="wrap">r-5c72f 超时（900000ms）· abort · 504 retryable</td><td class="mono">09:07:59</td></tr>
+          <tr><td class="mono">128</td><td><span class="badge type">startup.recovery</span></td><td>quant-platform</td><td class="wrap">recoverOrphanedClaims：遗留 activeClaim r-4e18b → 终态失败 ORPHANED_CLAIM</td><td class="mono">09:00:00</td></tr>
+          <tr><td class="mono">127</td><td><span class="badge type">promotion.recovery</span></td><td>–</td><td class="wrap">recoverAll：扫描 runtime/promotions · 0 个未完成 journal</td><td class="mono">09:00:00</td></tr>
+        </tbody></table>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const $ = sel => document.querySelector(sel);
+const $$ = sel => [...document.querySelectorAll(sel)];
+
+/* ---------- 静态演示数据 ---------- */
+
+const TIMELINE_STEPS = ['认领', '证据准备', '分析会话', 'staging 校验', '晋升', '状态前移'];
+
+const RUNS = [
+  {
+    id: 'r-8f21c', project: 'knowledge-engine', commit: '3fa2b91', trigger: 'git-hook',
+    state: ['running', 'running'], session: ['running', 'running'], journal: null, duration: '42.3s',
+    detail: {
+      meta: [
+        ['状态', '<span class="badge running">running</span>'],
+        ['项目 / commit', 'knowledge-engine · <span class="mono">3fa2b91c4e5d（main）</span>'],
+        ['触发', '<span class="mono">git-hook · hook-event/v2 · operationId op_4d7e</span>'],
+        ['备注', 'feat: 拆触发管道接入 reconciler'],
+        ['认领快照', '<span class="mono">fingerprint sha256:77aa…c4（已冻结，重试时逐项比对）</span>'],
+        ['错误', '–'],
+      ],
+      timeline: { states: ['done', 'done', 'current'], times: ['10:01:58', '10:01:59', '10:02:01'] },
+      logTitle: '分析会话日志（有界 buffer，供调试台展示）',
+      log: [
+        '<span class="lg-dim">10:02:01</span>  <span class="lg-tag">[claude/init]</span> session=01JAXQ… · model=claude-sonnet-4-5 · permissionMode=acceptEdits',
+        '<span class="lg-dim">10:02:09</span>  <span class="lg-tag">[claude/tool-use]</span> Read · knowledge-engine/AGENTS.md',
+        '<span class="lg-dim">10:02:44</span>  <span class="lg-tag">[claude/tool-use]</span> Grep · "post-commit" → 14 处',
+        '<span class="lg-dim">10:03:20</span>  <span class="lg-tag">[claude/text-delta]</span> ×89（分析输出中）',
+        '<span class="lg-dim">10:03:21</span>  <span class="lg-dim">…运行中 · tokens in 9.1k / out 1.2k</span>',
+      ],
+      staging: null,
+      stagingNote: '分析会话结束后生成 staging 产物，校验通过才写入知识树。',
+    },
+  },
+  {
+    id: 'r-7d04e', project: 'knowledge-engine', commit: '8c41aa2', trigger: 'git-hook',
+    state: ['succeeded', 'state.advanced'], session: ['idle', 'idle'], journal: ['completed', 'completed'], duration: '96.5s',
+    detail: {
+      meta: [
+        ['状态', '<span class="badge advanced">state.advanced</span>'],
+        ['项目 / commit', 'knowledge-engine · <span class="mono">8c41aa2e7b19（main）</span>'],
+        ['触发', '<span class="mono">git-hook · hook-event/v2 · operationId op_9c2f</span>'],
+        ['备注', 'feat: 阶段① 检索面接真 BM25 + 向量'],
+        ['认领快照', '<span class="mono">fingerprint sha256:33bd…8a（晋升后已释放）</span>'],
+        ['错误', '–'],
+      ],
+      timeline: { states: ['done', 'done', 'done', 'done', 'done', 'done'], times: ['09:21:04', '09:21:05', '09:21:07', '09:22:31', '09:22:33', '09:22:34'] },
+      logTitle: '分析会话日志',
+      log: [
+        '<span class="lg-dim">09:21:07</span>  <span class="lg-tag">[claude/init]</span> session=01JAXP… · model=claude-sonnet-4-5 · permissionMode=acceptEdits',
+        '<span class="lg-dim">09:21:12</span>  <span class="lg-tag">[claude/tool-use]</span> Read · knowledge-engine/AGENTS.md',
+        '<span class="lg-dim">09:21:31</span>  <span class="lg-tag">[claude/tool-use]</span> Grep · "post-commit" → 14 处',
+        '<span class="lg-dim">09:22:02</span>  <span class="lg-tag">[claude/tool-use]</span> Read · src/server.js',
+        '<span class="lg-dim">09:22:18</span>  <span class="lg-tag">[claude/text-delta]</span> ×231（摘要输出）',
+        '<span class="lg-dim">09:22:30</span>  <span class="lg-ok">[claude/result]</span> duration_ms=83218 · turns=6 · tokens in 18.2k / out 3.4k',
+        '<span class="lg-dim">09:22:31</span>  <span class="lg-ok">[session]</span> onSessionEnded → state=idle',
+      ],
+      staging: `{
+  "schema": "knowledge-staging-manifest/v1",
+  "projectId": "knowledge-engine",
+  "runId": "r-7d04e",
+  "commitSha": "8c41aa2e7b19…",
+  "operations": [
+    {
+      "path": "changes/8c41aa2.md",
+      "operation": "create",
+      "reason": "feat: 阶段① 检索面接真 BM25 + 向量",
+      "sha256": "b71ec4…",
+      "evidenceReferences": [
+        "commit:8c41aa2e7b19…",
+        "patch:sha256:9f2e11…"
+      ]
+    },
+    {
+      "path": "ARCHITECTURE.md",
+      "operation": "replace",
+      "reason": "新增检索面拓扑（BM25 + 向量运行时）",
+      "sha256": "0c4d9a…",
+      "evidenceReferences": ["commit:8c41aa2e7b19…"]
+    }
+  ]
+}`,
+      journal: [
+        ['journal 相位', '<span class="badge completed">completed</span>'],
+        ['operations', '<span class="mono">create ×1 · replace ×1 · 备份 2 份（recovery/promotions）</span>'],
+        ['校验', '<span class="mono">validateManifest 通过 · verifyPromoted 通过</span>'],
+        ['状态前移', '<span class="mono">fingerprint 核对一致 → lastAnalyzedCommit = 8c41aa2 · index.generation +1</span>'],
+      ],
+    },
+  },
+  {
+    id: 'r-6b99a', project: 'knowledge-engine', commit: 'f00d3c1', trigger: 'manual-debug',
+    state: ['succeeded', 'succeeded · fake'], session: ['idle', '未拉起'], journal: ['completed', 'completed'], duration: '0.4s',
+    detail: {
+      meta: [
+        ['状态', '<span class="badge succeeded">succeeded</span> <span class="badge fake">fake</span>'],
+        ['项目 / commit', 'knowledge-engine · <span class="mono">f00d3c19a2b7（main）</span>'],
+        ['触发', '<span class="mono">manual-debug（调试台「模拟触发分析」）</span>'],
+        ['备注', 'chore: 调试台联调'],
+        ['错误', '–'],
+      ],
+      timeline: { states: ['done', 'done', 'done', 'done', 'done', 'done'], times: ['08:54:10', '08:54:10', '08:54:10', '08:54:10', '08:54:10', '08:54:11'] },
+      fake: 'KB_AUTOMATION_FAKE_CLAUDE=1 —— E2E 通道：不拉起 SDK 会话，直接生成 staging 产物（manifest 含真实 sha256 与证据引用），用于无 Claude Code 环境与回归测试。',
+      staging: `{
+  "schema": "knowledge-staging-manifest/v1",
+  "projectId": "knowledge-engine",
+  "runId": "r-6b99a",
+  "commitSha": "f00d3c19a2b7…",
+  "operations": [
+    {
+      "path": "changes/f00d3c1.md",
+      "operation": "create",
+      "reason": "chore: 调试台联调（fake-claude 通道产物）",
+      "sha256": "5dd201…",
+      "evidenceReferences": ["commit:f00d3c19a2b7…"]
+    }
+  ]
+}`,
+      journal: [
+        ['journal 相位', '<span class="badge completed">completed</span>'],
+        ['operations', '<span class="mono">create ×1 · 备份 0 份（create 无需备份）</span>'],
+        ['校验', '<span class="mono">validateManifest 通过 · verifyPromoted 通过</span>'],
+      ],
+    },
+  },
+  {
+    id: 'r-5c72f', project: 'quant-platform', commit: 'b7a1d4e', trigger: 'git-hook',
+    state: ['failed', 'failed'], session: ['failed', 'failed'], journal: null, duration: '901.2s',
+    detail: {
+      meta: [
+        ['状态', '<span class="badge failed">failed</span>'],
+        ['项目 / commit', 'quant-platform · <span class="mono">b7a1d4e9f0c3（main）</span>'],
+        ['触发', '<span class="mono">git-hook · hook-event/v2 · operationId op_2b8a</span>'],
+        ['认领快照', '<span class="mono">phase = failed · error.retryable = true</span>'],
+        ['错误', '<span class="mono" style="color:var(--red)">分析会话超时（KB_AUTOMATION_TIMEOUT_MS=900000），已 abort —— HTTP 504 retryable</span>'],
+      ],
+      timeline: { states: ['done', 'done', 'failed'], times: ['08:52:18', '08:52:19', '08:52:20 → 09:07:59'] },
+      logTitle: '分析会话日志（超时截断）',
+      log: [
+        '<span class="lg-dim">08:52:20</span>  <span class="lg-tag">[claude/init]</span> session=01JAXN… · model=claude-sonnet-4-5',
+        '<span class="lg-dim">08:53:02</span>  <span class="lg-tag">[claude/tool-use]</span> Read · quant-platform/src/gateway.ts',
+        '<span class="lg-dim">08:59:41</span>  <span class="lg-tag">[claude/text-delta]</span> ×412（长 commit，分析未收敛）',
+        '<span class="lg-dim">09:07:59</span>  <span class="lg-err">[session]</span> 超时（900000ms）→ abort · state=failed（retryable）',
+        '<span class="lg-dim">09:07:59</span>  <span class="lg-dim">认领保留 phase=failed；同一 SHA 重试时逐项比对快照指纹</span>',
+      ],
+      staging: null,
+      stagingNote: '会话超时，未产生 staging 产物。知识树未被写入（单写者：只有晋升路径可写）。',
+    },
+  },
+  {
+    id: 'r-4e18b', project: 'quant-platform', commit: '2ce95f7', trigger: 'git-hook',
+    state: ['failed', 'orphaned'], session: ['idle', '–'], journal: null, duration: '1.2s',
+    detail: {
+      meta: [
+        ['状态', '<span class="badge failed">failed</span>'],
+        ['项目 / commit', 'quant-platform · <span class="mono">2ce95f7d81aa（main）</span>'],
+        ['触发', '<span class="mono">git-hook（上一进程遗留的 activeClaim）</span>'],
+        ['错误', '<span class="mono" style="color:var(--red)">ORPHANED_CLAIM（终态，retryable=false）</span>'],
+      ],
+      orphan: '<b>启动对账（recoverOrphanedClaims）：</b>服务重启时发现上一进程遗留的 activeClaim（r-4e18b · 2ce95f7），直接标记为终态失败，<b>不重试、不扫描、不从历史推断</b>；只有未来显式 hook SHA 到达才会开始新工作（新 SHA 到达时本失败项自动 supersede，记 FAILED_CLAIM_SUPERSEDED）。晋升侧另有 recoverAll()：扫描 runtime/promotions 的未完成 journal，已全部 applied 则补 verify + 状态前移，否则逆序回滚备份（用户文件已变则 recovery-conflict）。',
+      timeline: { states: ['failed'], times: ['09:00:00'] },
+    },
+  },
+];
+
+/* ---------- 渲染 ---------- */
+
+function badge(pair) { return `<span class="badge ${pair[0]}">${pair[1]}</span>`; }
+
+function toast(message) {
+  const el = $('#toast');
+  el.textContent = message;
+  el.classList.add('show');
+  clearTimeout(toast.__t);
+  toast.__t = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+$('#runsBody').innerHTML = RUNS.map((run, i) => `
+  <tr class="click ${i === 1 ? 'sel' : ''}" data-idx="${i}">
+    <td class="mono">${run.id}</td>
+    <td>${run.project}</td>
+    <td class="mono">${run.commit}</td>
+    <td class="mono">${run.trigger}</td>
+    <td>${badge(run.state)}</td>
+    <td>${badge(run.session)}</td>
+    <td>${run.journal ? badge(run.journal) : '<span class="mono" style="color:var(--text-3)">–</span>'}</td>
+    <td class="mono">${run.duration}</td>
+  </tr>`).join('');
+
+function renderDetail(run) {
+  const d = run.detail;
+  let html = `<dl class="kv">${d.meta.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+
+  if (d.timeline) {
+    html += `<div class="panel-sub">阶段时间线</div><div class="timeline">`;
+    d.timeline.states.forEach((state, i) => {
+      if (i > 0) html += `<span class="tarrow">→</span>`;
+      const cls = state === 'done' ? 'done' : state === 'current' ? 'current' : 'failed';
+      const name = TIMELINE_STEPS[i] || (state === 'failed' ? '失败' : '…');
+      html += `<div class="tstep ${cls}"><span class="t-name">${name}</span><span class="t-time">${d.timeline.times[i]}</span></div>`;
+    });
+    html += `</div>`;
+  }
+  if (d.fake) html += `<div class="panel-sub">运行通道</div><div class="notice warn">${d.fake}</div>`;
+  if (d.orphan) html += `<div class="panel-sub">启动对账</div><div class="notice err">${d.orphan}</div>`;
+  if (d.log) {
+    html += `<div class="panel-sub">${d.logTitle}</div><div class="code">${d.log.join('\n')}</div>`;
+  }
+  if (d.staging !== undefined) {
+    html += `<div class="panel-sub">staging manifest（晋升前产物，校验通过才写入知识树）</div>`;
+    html += d.staging
+      ? `<pre class="code">${d.staging}</pre>`
+      : `<pre class="code lg-dim">该运行没有 staging 产物。${d.stagingNote ? '\n' + d.stagingNote : ''}</pre>`;
+  }
+  if (d.journal) {
+    html += `<div class="panel-sub">晋升 journal</div><dl class="kv">${d.journal.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+  }
+  $('#dRunId').textContent = run.id;
+  $('#dBody').innerHTML = html;
+}
+
+$$('#runsBody tr').forEach(tr => {
+  tr.addEventListener('click', () => {
+    $$('#runsBody tr').forEach(r => r.classList.toggle('sel', r === tr));
+    renderDetail(RUNS[Number(tr.dataset.idx)]);
+  });
+});
+
+$$('.nav-item').forEach(btn => {
+  btn.addEventListener('click', () => {
+    $$('.nav-item').forEach(b => b.classList.toggle('on', b === btn));
+    $$('.view').forEach(v => v.classList.toggle('on', v.id === 'view-' + btn.dataset.view));
+  });
+});
+
+$$('[data-toast]').forEach(btn => {
+  btn.addEventListener('click', () => toast(btn.dataset.toast));
+});
+
+renderDetail(RUNS[1]);
+</script>
+</body>
+</html>
