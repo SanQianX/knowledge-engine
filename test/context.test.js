@@ -10,6 +10,8 @@ const { MemoryService } = require('../src/memories');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
 const { EngineContext } = require('../src/context');
+const { ConversationStore, sha256: contentSha } = require('../src/runtime/conversation-store');
+const PREFERENCE_QUOTE = '使用中文错误文案，保持主要功能简单。对外错误信息使用中文；未确认偏好；当前偏好；新导出使用新约定；' + Array.from({ length: 5 }, (_, i) => `${i}-` + '独立偏好'.repeat(180)).join('；');
 
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'context-中文 空格-'));
@@ -19,15 +21,18 @@ async function fixture(t) {
     fs.mkdirSync(path.join(repoPath, 'src'), { recursive: true }); fs.mkdirSync(knowledgePath, { recursive: true });
     execFileSync('git', ['init', repoPath], { windowsHide: true, stdio: 'ignore' });
     store.addProject({ projectId: id, repoPath, knowledgePath, domainId: domain });
-    fs.writeFileSync(path.join(knowledgePath, 'README.md'), '# Export contract\n\nExport requires schemaRevision 37. Preference evidence: 使用中文错误文案，保持主要功能简单。\n');
+    fs.writeFileSync(path.join(knowledgePath, 'README.md'), `# Export contract\n\nExport requires schemaRevision 37. Preference evidence: ${PREFERENCE_QUOTE}\n`);
   }
-  const memories = new MemoryService(store);
+  const conversations = new ConversationStore({ layout: new RuntimeLayout(store.dataDir) });
+  const memories = new MemoryService(store, { readSnapshot: (projectId, commitSha) => conversations.readSnapshot(projectId, commitSha) });
   await memories.configure([
     { id: 'brain-default', brainId: 'brain-default', kind: 'brain', knowledgePath: path.join(root, 'shared') },
     ...['domain-one', 'domain-two'].map(id => ({ id, domainId: id, brainId: 'brain-default', kind: 'domain', knowledgePath: path.join(root, id) })),
   ]);
+  const frozenPrompt = `请记住：${PREFERENCE_QUOTE}这是跨项目长期约定。`;
+  const snapshot = conversations.writeSnapshot('project-a', { commitSha: 'a'.repeat(40), status: 'available', turns: [{ turnId: 'turn-context', source: 'claude-code', sessionId: 'session-context', bindingKind: 'direct', userEvents: [{ eventId: 'evt-context', capturedAt: new Date().toISOString(), content: frozenPrompt, contentHash: contentSha(frozenPrompt), inputOrigin: 'human' }], assistantEvents: [] }] });
   const capture = text => {
-    memories.capture({ projectId: 'project-a', runId: 'run-source', commitSha: 'a'.repeat(40), promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md' }], memoryCandidates: [{ text, entryId: 'README.md', quote: '使用中文错误文案，保持主要功能简单。' }] } });
+    memories.capture({ projectId: 'project-a', runId: 'run-source', commitSha: 'a'.repeat(40), promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create', evidenceReferences: [`conversation:${snapshot.snapshotHash}`] }], memoryCandidates: [{ text, entryId: 'README.md', quote: PREFERENCE_QUOTE, sourceEventId: 'evt-context', sourceHash: contentSha(frozenPrompt), scopeType: 'domain', eligibility: { durable: true, crossProject: true, reason: '用户要求作为跨项目长期约定', scopeReason: '原话明确为跨项目约定' } }] } });
     return memories.list().find(m => m.text === text);
   };
   const retrieval = new EngineRetrieval({ store, memories, layout: new RuntimeLayout(store.dataDir), projectStore: { readState: id => store.readRuntime(id) } });

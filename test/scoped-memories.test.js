@@ -9,6 +9,9 @@ const { MemoryService } = require('../src/memories');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
 const AtomicFile = require('../src/runtime/atomic-file');
+const { ConversationStore, sha256: contentSha } = require('../src/runtime/conversation-store');
+const PREFERENCE_QUOTE = '保持主要功能简单，避免无必要实体。候选规则alpha；共用规则beta；单项目规则gamma；去重规则delta；旧范围规则zeta；相同内容eta；有效偏好；不能部分保存。';
+const SOURCE_PROMPT = `请记住以下所有项目长期约定：${PREFERENCE_QUOTE}`;
 
 async function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-scoped-memory-'));
@@ -16,27 +19,31 @@ async function fixture(t) {
   for (const [projectId, domainId] of [['project-a', 'domain-one'], ['project-b', 'domain-one'], ['project-c', 'domain-two']]) {
     const p = store.addProject({ projectId, domainId, repoPath: path.join(root, projectId, 'code'), knowledgePath: path.join(root, projectId, 'knowledge') }).project;
     fs.mkdirSync(p.knowledgePath, { recursive: true });
-    fs.writeFileSync(path.join(p.knowledgePath, 'README.md'), '# 项目知识\n\n明确长期偏好：保持主要功能简单，避免无必要实体。\n');
+    fs.writeFileSync(path.join(p.knowledgePath, 'README.md'), `# 项目知识\n\n明确长期偏好：${PREFERENCE_QUOTE}\n`);
   }
   const scopes = [
     { id: 'brain-default', brainId: 'brain-default', kind: 'brain', knowledgePath: path.join(root, 'shared') },
     ...['domain-one', 'domain-two'].map(id => ({ id, brainId: 'brain-default', domainId: id, kind: 'domain', knowledgePath: path.join(root, id) })),
   ];
-  const service = new MemoryService(store); await service.configure(scopes);
+  const conversations = new ConversationStore({ layout: new RuntimeLayout(store.dataDir) });
+  const service = new MemoryService(store, { readSnapshot: (projectId, commitSha) => conversations.readSnapshot(projectId, commitSha) }); await service.configure(scopes);
   const retrieval = new EngineRetrieval({ store, memories: service, layout: new RuntimeLayout(store.dataDir), projectStore: { readState: id => store.readRuntime(id) }, vectorUrl: 'http://127.0.0.1:1' });
+  const frozen = {};
+  const freeze = (projectId, commitSha = 'a'.repeat(40)) => frozen[`${projectId}:${commitSha}`] ||= conversations.writeSnapshot(projectId, { commitSha, status: 'available', turns: [{ turnId: 'turn-one', source: 'claude-code', sessionId: 'session-one', bindingKind: 'direct', userEvents: [{ eventId: `evt-${projectId}`, capturedAt: new Date().toISOString(), content: SOURCE_PROMPT, contentHash: contentSha(SOURCE_PROMPT), inputOrigin: 'human' }], assistantEvents: [] }] });
   const capture = (text, scopeType, projectId = 'project-a') => {
-    service.capture({ projectId, commitSha: 'a'.repeat(40), runId: 'run-one', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create' }], memoryCandidates: [{ text, entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。', ...(scopeType ? { scopeType } : {}) }] } });
+    const snapshot = freeze(projectId);
+    service.capture({ projectId, commitSha: 'a'.repeat(40), runId: 'run-one', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create', evidenceReferences: [`conversation:${snapshot.snapshotHash}`] }], memoryCandidates: [{ text, entryId: 'README.md', quote: PREFERENCE_QUOTE, sourceEventId: `evt-${projectId}`, sourceHash: contentSha(SOURCE_PROMPT), scopeType: scopeType || 'domain', eligibility: { durable: true, crossProject: true, reason: '用户原话要求长期保持', scopeReason: '原话为跨项目约定' } }] } });
     return service.list().find(m => m.text === text && m.evidence.projectId === projectId);
   };
   const found = async (projectId, query, scope = 'brain') => (await retrieval.search({ projectId, query, scope })).results.filter(r => r.entry_id.startsWith('memories/'));
   t.after(() => { service.close?.(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
-  return { root, store, service, scopes, retrieval, capture, found };
+  return { root, store, service, scopes, retrieval, capture, found, conversations };
 }
 
 test('confirmation edits content and chooses any existing target; scope filtering precedes brain-wide ranking and get', async t => {
   const f = await fixture(t);
   const candidate = f.capture('候选规则alpha');
-  assert.equal(candidate.scopeType, 'project'); assert.equal(candidate.scopeId, 'project-a');
+  assert.equal(candidate.scopeType, 'domain'); assert.equal(candidate.scopeId, 'domain-one');
   assert.deepEqual(await f.found('project-a', '候选规则alpha'), []);
   const accepted = await f.service.update(candidate.id, { text: '编辑后的规则alpha', scopeType: 'project', scopeId: 'project-b', status: 'confirmed' });
   assert.equal(accepted.syncStatus, 'ready'); assert.equal(accepted.evidence.projectId, 'project-a');
@@ -52,10 +59,12 @@ test('confirmation edits content and chooses any existing target; scope filterin
 
 test('invalid model candidate document IDs are reported without inventing provenance or losing valid knowledge', async t => {
   const f = await fixture(t);
-  const run = { projectId: 'project-a', commitSha: 'b'.repeat(40), runId: 'run-candidates', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create' }], memoryCandidates: [
-    { text: '有效偏好', entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。' },
-    { text: '有效偏好', entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。' },
-    { text: '错误标识', entryId: 'candidate-minimal-scope', quote: '保持主要功能简单，避免无必要实体。' },
+  const snapshotB = f.conversations.writeSnapshot('project-a', { commitSha: 'b'.repeat(40), status: 'available', turns: [{ turnId: 'turn-again', source: 'claude-code', sessionId: 'session-again', bindingKind: 'direct', userEvents: [{ eventId: 'evt-again', capturedAt: new Date().toISOString(), content: SOURCE_PROMPT, contentHash: contentSha(SOURCE_PROMPT), inputOrigin: 'human' }], assistantEvents: [] }] });
+  const sourced = { sourceEventId: 'evt-again', sourceHash: contentSha(SOURCE_PROMPT), scopeType: 'domain', eligibility: { durable: true, crossProject: true, reason: '用户原话要求长期保持', scopeReason: '原话为跨项目约定' } };
+  const run = { projectId: 'project-a', commitSha: 'b'.repeat(40), runId: 'run-candidates', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create', evidenceReferences: [`conversation:${snapshotB.snapshotHash}`] }], memoryCandidates: [
+    { text: '有效偏好', entryId: 'README.md', quote: PREFERENCE_QUOTE, ...sourced },
+    { text: '有效偏好', entryId: 'README.md', quote: PREFERENCE_QUOTE, ...sourced },
+    { text: '错误标识', entryId: 'candidate-minimal-scope', quote: PREFERENCE_QUOTE },
     { text: '错误引用', entryId: 'README.md', quote: '不存在的引用也超过八个字符' },
   ] } };
   const report = f.service.capture(run);
@@ -79,7 +88,7 @@ test('global and domain memories remain independent, move safely, and follow cur
   assert.ok(!fs.readFileSync(f.service.file(f.scopes[0]), 'utf8').includes('共用规则beta'));
   f.store.addProject({ ...f.store.getProject('project-a'), domainId: 'domain-two' });
   assert.ok((await f.found('project-a', '共用规则beta')).length);
-  const local = f.capture('单项目规则gamma'); await f.service.update(local.id, { status: 'confirmed' });
+  const local = f.capture('单项目规则gamma'); await f.service.update(local.id, { status: 'confirmed', scopeType: 'project', scopeId: 'project-a' });
   f.store.removeProject('project-a');
   assert.equal(f.service.list().find(m => m.id === local.id).targetAvailable, false);
   assert.ok((await f.found('project-c', '共用规则beta')).length);
@@ -91,13 +100,13 @@ test('scoped duplicate keys and extraction tombstones survive edits and restart;
   const one = f.capture('去重规则delta'); await f.service.update(one.id, { text: '编辑规则delta', scopeType: 'global', scopeId: 'brain-default' });
   f.capture('去重规则delta'); assert.equal(f.service.list().length, 1);
   await f.service.update(one.id, { status: 'ignored' }); f.capture('去重规则delta'); assert.equal(f.service.list().length, 1);
-  const two = f.capture('去重规则delta', undefined, 'project-b'); assert.ok(two && two.id !== one.id);
-  const legacy = { id: 'memory-legacy', fingerprint: 'legacy', brainId: 'brain-default', text: '历史全局规则epsilon', status: 'confirmed', evidence: { projectId: 'project-a', commitSha: 'b'.repeat(40), entryId: 'README.md', quote: '保持主要功能简单，避免无必要实体。' } };
+  assert.equal(f.capture('去重规则delta', undefined, 'project-b'), undefined, '同领域重复指纹不再新建候选');
+  const legacy = { id: 'memory-legacy', fingerprint: 'legacy', brainId: 'brain-default', text: '历史全局规则epsilon', status: 'confirmed', evidence: { projectId: 'project-a', commitSha: 'b'.repeat(40), entryId: 'README.md', quote: PREFERENCE_QUOTE } };
   f.store.state.memories.push(legacy); f.store.save(); await f.service.recover();
   const restarted = new MemoryService(new EngineStore(f.store.dataDir)); t.after(() => restarted.close?.()); await restarted.recover();
   assert.equal(restarted.list().find(m => m.id === legacy.id).scopeType, 'global');
   assert.ok((await f.found('project-c', '历史全局规则epsilon')).length);
-  assert.equal(restarted.list({ scopeType: 'project', scopeId: 'project-b' }).length, 1);
+  assert.equal(restarted.list({ scopeType: 'domain', scopeId: 'domain-one' }).length, 0);
 });
 
 test('a failed old-scope rewrite never leaks stale memory after moving; retry repairs only projections', async t => {
@@ -114,7 +123,7 @@ test('a failed old-scope rewrite never leaks stale memory after moving; retry re
 });
 
 test('candidate validation, concurrent review, malformed state and failed state writes preserve confirmed evidence', async t => {
-  const f = await fixture(t), one = f.capture('相同内容eta'), two = f.capture('相同内容eta', undefined, 'project-b');
+  const f = await fixture(t), one = f.capture('相同内容eta'), two = f.capture('相同内容eta', 'domain', 'project-c');
   await assert.rejects(f.service.update(one.id, { scopeId: '' }), { code: 'INVALID_ARGUMENT' });
   await assert.rejects(f.service.update(one.id, { evidence: {} }), { code: 'INVALID_ARGUMENT' });
   await f.service.update(one.id, { scopeType: 'global', scopeId: 'brain-default', status: 'confirmed' });

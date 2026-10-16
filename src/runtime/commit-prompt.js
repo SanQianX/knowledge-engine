@@ -35,15 +35,18 @@ function formatRequirements(records) {
 
 function formatConversationUserTruth(snapshot) {
   if (!snapshot || !Array.isArray(snapshot.turns) || snapshot.turns.length === 0) return REQUIREMENT_UNAVAILABLE;
-  return snapshot.turns.flatMap(turn => turn.userEvents.map(event => [
+  const rendered = snapshot.turns.flatMap(turn => turn.userEvents.map(event => [
     `- turnId: ${turn.turnId}`,
     `  eventId: ${event.eventId}`,
+    `  inputOrigin: ${event.inputOrigin || 'unknown'}`,
+    `  contentHash: ${event.contentHash}`,
     `  source/session: ${turn.source}/${turn.sessionId || '(unavailable)'}`,
     `  binding: ${turn.bindingKind}`,
     `  capturedAt: ${event.capturedAt}`,
     '  userPrompt: |',
     ...String(event.content || '').split(/\r?\n/).map(line => `    ${line}`),
   ].join('\n'))).join('\n');
+  return `inputOrigin marks who typed each frozen user event: only "human" is the owner speaking; "agent-delegation" is a delegated task order from another agent; "unknown" cannot be verified. Memory candidates may rely on "human" events only.\n${rendered}`;
 }
 
 function formatAssistantEvidence(snapshot) {

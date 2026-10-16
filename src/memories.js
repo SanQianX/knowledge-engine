@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const AtomicFile = require('./runtime/atomic-file');
 const { RuntimeLayout } = require('./runtime/layout');
 const { validateProjectId, DomainError } = require('./runtime/contracts');
+const { MemoryEligibility } = require('./memory-eligibility');
 
 const TYPES = ['global', 'domain', 'project'];
 const normalized = text => String(text).toLowerCase().replace(/\s+/g, ' ').trim();
@@ -15,6 +16,7 @@ class MemoryService {
     this.store = store; this.layout = new RuntimeLayout(store.dataDir); this.onMaterialized = options.onMaterialized;
     this.syncErrors = new Map(); this.closed = false; this.onSyncChange = options.onSyncChange; this.writes = new Set();
     this.getIndexStatus = options.getIndexStatus;
+    this.eligibility = new MemoryEligibility({ readSnapshot: options.readSnapshot || null });
   }
   lock() { return this.layout.getRuntimePath('locks', 'memories.lock'); }
   scopeOf(memory) { return { type: memory.scopeType || 'global', id: memory.scopeId || memory.brainId || 'brain-default' }; }
@@ -101,6 +103,7 @@ class MemoryService {
     const project = this.store.getProject(run.projectId);
     if (!project || !run.promotedAt) return report;
     const candidates = Array.isArray(run.staging?.memoryCandidates) ? run.staging.memoryCandidates : [];
+    const snapshot = this.eligibility.resolve(run);
     const before = this.store.state.memories, next = [...before];
     for (const [index, raw] of candidates.slice(0, 20).entries()) {
       const reject = code => report.rejected.push({ index, code });
@@ -114,12 +117,14 @@ class MemoryService {
       if (!this.layout.isPathInside(project.knowledgePath, file, { realpath: true })) { reject('PATH_OUTSIDE_ROOT'); continue; }
       try { if (!fs.readFileSync(file, 'utf8').includes(quote)) { reject('QUOTE_MISMATCH'); continue; } }
       catch { reject('EVIDENCE_UNREADABLE'); continue; }
+      const provenance = this.eligibility.verify(raw, snapshot, project);
+      if (!provenance.ok) { reject(provenance.code); continue; }
       const brainId = project.brainId || 'brain-default';
-      const scopeType = raw.scopeType === 'global' ? 'global' : raw.scopeType === 'domain' && project.domainId ? 'domain' : 'project';
-      const scopeId = scopeType === 'global' ? brainId : scopeType === 'domain' ? project.domainId : project.projectId;
+      const scopeType = raw.scopeType;
+      const scopeId = scopeType === 'global' ? brainId : project.domainId;
       const key = fingerprint(brainId, scopeType, scopeId, text);
-      if (next.some(m => m.captureFingerprint === key || fingerprint(m.brainId || 'brain-default', this.scopeOf(m).type, this.scopeOf(m).id, m.text) === key || !m.scopeType && m.evidence.projectId === project.projectId && normalized(m.originalText || m.text) === normalized(text))) { report.deduplicated++; continue; }
-      next.push({ id: `memory-${crypto.randomUUID()}`, fingerprint: key, captureFingerprint: key, brainId, domainId: project.domainId || null, scopeType, scopeId, text, originalText: text, status: 'candidate', evidence: { projectId: project.projectId, commitSha: run.commitSha, runId: run.runId, entryId, quote }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      if (next.some(m => m.captureFingerprint === key || fingerprint(m.brainId || 'brain-default', this.scopeOf(m).type, this.scopeOf(m).id, m.text) === key || !m.scopeType && m.evidence?.projectId === project.projectId && normalized(m.originalText || m.text) === normalized(text))) { report.deduplicated++; continue; }
+      next.push({ id: `memory-${crypto.randomUUID()}`, fingerprint: key, captureFingerprint: key, brainId, domainId: project.domainId || null, scopeType, scopeId, text, originalText: text, status: 'candidate', sourceEventId: provenance.sourceEventId, sourceHash: provenance.sourceHash, eligibility: provenance.eligibility, evidence: { projectId: project.projectId, commitSha: run.commitSha, runId: run.runId, entryId, quote }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
       report.accepted++;
     }
     if (report.accepted) {
@@ -183,7 +188,7 @@ class MemoryService {
       // Preserve legacy global bytes until the user actually edits that record.
       const scopeText = m.scopeType ? `适用范围：${{ global: '全局', domain: '领域', project: '项目' }[scope.type]} · ${scope.id}\n\n` : '';
       const text = m.scopeType ? m.text.replace(/^\s*(#{1,6})\s/gm, '\\$1 ') : m.text;
-      const source = m.sourceType === 'manual' ? '手动添加（用户确认）' : `${m.evidence.projectId} · ${m.evidence.commitSha} · ${m.evidence.entryId}`;
+      const source = m.sourceType === 'manual' ? '手动添加（用户确认）' : m.evidence ? `${m.evidence.projectId} · ${m.evidence.commitSha} · ${m.evidence.entryId}` : '历史记录（来源未记录）';
       return `## ${m.id}\n\n${scopeText}${text}\n\n来源：${source}\n`;
     }).join('\n');
   }

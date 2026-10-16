@@ -8,6 +8,7 @@ const { EngineStore } = require('../src/store');
 const { MemoryService } = require('../src/memories');
 const { EngineRetrieval } = require('../src/retrieval');
 const { RuntimeLayout } = require('../src/runtime/layout');
+const { ConversationStore, sha256: contentSha } = require('../src/runtime/conversation-store');
 
 test('evidenced candidates, confirm/edit/ignore durability and shared retrieval', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-memory-'));
@@ -15,10 +16,13 @@ test('evidenced candidates, confirm/edit/ignore durability and shared retrieval'
   const project = store.addProject({ projectId: 'project-one', repoPath: path.join(root, '代码目录'), knowledgePath: path.join(root, '知识目录'), domainId: 'domain-tools' }).project;
   fs.mkdirSync(project.knowledgePath);
   fs.writeFileSync(path.join(project.knowledgePath, 'README.md'), '# 项目原则\n\n保持功能简单，复用成熟消息流。\n');
-  const service = new MemoryService(store);
+  const conversations = new ConversationStore({ layout: new RuntimeLayout(store.dataDir) });
+  const service = new MemoryService(store, { readSnapshot: (projectId, commitSha) => conversations.readSnapshot(projectId, commitSha) });
   const scopes = [{ id: 'brain-default', brainId: 'brain-default', kind: 'brain', knowledgePath: path.join(root, 'shared-brain') }, { id: 'domain-tools', brainId: 'brain-default', domainId: 'domain-tools', kind: 'domain', knowledgePath: path.join(root, 'shared-domain') }];
   await service.configure(scopes);
-  const run = { projectId: project.projectId, commitSha: 'a'.repeat(40), runId: 'run-one', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create' }], memoryCandidates: [{ text: '保持功能简单', entryId: 'README.md', quote: '保持功能简单，复用成熟消息流。' }, { text: '没有依据的偏好', entryId: 'README.md', quote: '这句话并不存在于知识文件' }] } };
+  const frozenPrompt = '请把这个作为所有项目的长期偏好记住：保持功能简单，复用成熟消息流。';
+  const snapshot = conversations.writeSnapshot(project.projectId, { commitSha: 'a'.repeat(40), status: 'available', turns: [{ turnId: 'turn-one', source: 'claude-code', sessionId: 'session-one', bindingKind: 'direct', userEvents: [{ eventId: 'evt-preference', capturedAt: new Date().toISOString(), content: frozenPrompt, contentHash: contentSha(frozenPrompt), inputOrigin: 'human' }], assistantEvents: [] }] });
+  const run = { projectId: project.projectId, commitSha: 'a'.repeat(40), runId: 'run-one', promotedAt: new Date().toISOString(), staging: { operations: [{ path: 'README.md', operation: 'create', evidenceReferences: [`conversation:${snapshot.snapshotHash}`] }], memoryCandidates: [{ text: '保持功能简单', entryId: 'README.md', quote: '保持功能简单，复用成熟消息流。', sourceEventId: 'evt-preference', sourceHash: contentSha(frozenPrompt), scopeType: 'global', eligibility: { durable: true, crossProject: true, reason: '用户原话要求作为所有项目的长期偏好', scopeReason: '原话明确覆盖所有项目' } }, { text: '没有依据的偏好', entryId: 'README.md', quote: '这句话并不存在于知识文件' }] } };
   service.capture(run); service.capture(run);
   assert.equal(service.list().length, 1);
   const retrieval = new EngineRetrieval({ store, memories: service, layout: new RuntimeLayout(store.dataDir), projectStore: { readState: id => store.readRuntime(id) }, vectorUrl: 'http://127.0.0.1:1' });
@@ -31,7 +35,8 @@ test('evidenced candidates, confirm/edit/ignore durability and shared retrieval'
   assert.ok((await retrieval.search({ projectId: project.projectId, query: '跨项目', scope: 'domain' })).results.some(r => r.space_id === 'domain:domain-tools'));
   assert.match((await retrieval.get({ projectId: project.projectId, spaceId: 'brain:brain-default', entryId: 'memories/confirmed.md' })).chunks[0].chunk_text, /非必要/);
   const restarted = new EngineStore(store.dataDir);
-  const recovered = new MemoryService(restarted);
+  const restartedConversations = new ConversationStore({ layout: new RuntimeLayout(restarted.dataDir) });
+  const recovered = new MemoryService(restarted, { readSnapshot: (projectId, commitSha) => restartedConversations.readSnapshot(projectId, commitSha) });
   await recovered.recover();
   assert.equal(recovered.list({ status: 'confirmed' }).length, 1);
   await recovered.update(candidate.id, { status: 'ignored' }); recovered.capture(run);

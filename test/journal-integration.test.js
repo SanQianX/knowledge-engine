@@ -39,7 +39,9 @@ test('real Git hooks → real project journals → durable engine → real vecto
       const filename = `changes/${input.claim.commitSha.slice(0, 12)}.md`;
       const markdown = `---\ncommit: ${input.claim.commitSha}\n---\n# Frozen evidence ${input.projectId}\n\n真实 Git Hook 集成维护 ${input.claim.commitSha}\n\n用户要求：保持功能简单，复用成熟消息流。\n`;
       AtomicFile.writeFileAtomic(path.join(input.stagingPath, 'files', filename), markdown);
-      AtomicFile.writeJsonAtomic(input.manifestPath, { schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, operations: [{ operation: 'create', path: filename, reason: 'Integration fixture accepted frozen evidence', sha256: `sha256:${crypto.createHash('sha256').update(markdown).digest('hex')}`, evidenceReferences: [`commit:${input.claim.commitSha}`, `patch:${input.claim.patchHash}`, `conversation:${input.claim.conversationSnapshotHash}`, `retrieval:${input.claim.retrievalManifestHash}`] }], memoryCandidates: [{ text: '保持功能简单，复用成熟消息流。', entryId: filename, quote: '保持功能简单，复用成熟消息流。' }] });
+      const frozen = runtime.coordinator.conversations.readSnapshot(input.projectId, input.claim.commitSha);
+      const human = frozen ? frozen.turns.flatMap(turn => turn.userEvents).find(event => (event.inputOrigin || 'unknown') === 'human') : null;
+      AtomicFile.writeJsonAtomic(input.manifestPath, { schema: 'knowledge-staging-manifest/v1', projectId: input.projectId, runId: input.claim.runId, commitSha: input.claim.commitSha, operations: [{ operation: 'create', path: filename, reason: 'Integration fixture accepted frozen evidence', sha256: `sha256:${crypto.createHash('sha256').update(markdown).digest('hex')}`, evidenceReferences: [`commit:${input.claim.commitSha}`, `patch:${input.claim.patchHash}`, `conversation:${input.claim.conversationSnapshotHash}`, `retrieval:${input.claim.retrievalManifestHash}`] }], memoryCandidates: human ? [{ text: '保持功能简单，复用成熟消息流。', entryId: filename, quote: '保持功能简单，复用成熟消息流。', sourceEventId: human.eventId, sourceHash: human.contentHash, scopeType: 'global', eligibility: { durable: true, crossProject: true, reason: '用户在冻结对话中明确要求所有项目长期保持', scopeReason: '原话明确覆盖所有项目' } }] : [] });
     } finally { active--; intervals.push({ type: 'finish', id: input.projectId, sha: input.claim.commitSha, at: Date.now() }); }
   } };
   const dataDir = path.join(root, 'engine-state');
@@ -59,6 +61,7 @@ test('real Git hooks → real project journals → durable engine → real vecto
       const projectId = `project-${name}`;
       runtime.store.addProject({ projectId, repoPath, knowledgePath, trackingStartCommit, repoIdentity, journalId: registered.id, conversationBaselineCursor: 0 });
       await manager.import(knowledgePath, projectId, false);
+      await bridge.captureWorkbenchEvent({ eventType: 'user_prompt', source: 'claude-code', projectPath: repoPath, sessionId: `session-${name}`, turnId: `turn-${name}`, eventKey: `workbench:journal-e2e-${name}:origin=human`, content: '请把这个作为所有项目的长期偏好记住：保持功能简单，复用成熟消息流。' });
       const hook = `#!/bin/sh\n"${process.execPath.replace(/\\/g, '/')}" "${path.join(bridgeRoot, 'src/bridge/bin/commit-boundary.js').replace(/\\/g, '/')}" --home "${home.replace(/\\/g, '/')}" --cwd "${repoPath.replace(/\\/g, '/')}" >/dev/null\n`;
       fs.writeFileSync(path.join(repoPath, '.git/hooks/post-commit'), hook, { mode: 0o755 });
       fs.writeFileSync(path.join(repoPath, 'file.txt'), `updated ${name}\n`); git(repoPath, ['add', '.']); git(repoPath, ['commit', '-qm', `feature ${name}`]);
@@ -75,8 +78,8 @@ test('real Git hooks → real project journals → durable engine → real vecto
     assert.ok(runtime.store.state.runs.every(r => r.state === 'succeeded' && r.indexState === 'succeeded'), JSON.stringify(runtime.store.state.runs.map(r => ({ state: r.state, error: r.error }))));
     assert.equal(maximum, 2, 'third project queues at concurrency cap');
     for (const p of registrations) {
-      assert.equal(runtime.store.state.journalCursors[p.journalId], 1);
-      assert.equal((await bridge.getConsumer('knowledge-engine')).cursors[p.journalId], 1);
+      assert.equal(runtime.store.state.journalCursors[p.journalId], 2);
+      assert.equal((await bridge.getConsumer('knowledge-engine')).cursors[p.journalId], 2);
       const result = await runtime.coordinator.retrieval.search({ projectId: p.projectId, query: p.sha });
       assert.ok(result.results.some(r => r.chunk_text.includes(p.sha)));
       assert.equal(result.health.index, 'ok');
@@ -86,6 +89,7 @@ test('real Git hooks → real project journals → durable engine → real vecto
     }
     await runtime.coordinator.drain();
     assert.equal(runtime.store.state.runs.length, 3, 'duplicate boundaries do not promote twice');
+    assert.equal(runtime.store.state.memories.length, 1, 'three identical sourced preferences deduplicate into one global candidate');
     const scope = { id: 'brain-default', brainId: 'brain-default', kind: 'brain', knowledgePath: path.join(root, '共享 智脑') };
     await runtime.coordinator.memories.configure([scope]);
     const memory = runtime.store.state.memories[0];
@@ -95,8 +99,8 @@ test('real Git hooks → real project journals → durable engine → real vecto
     while (Date.now() < sharedDeadline && runtime.coordinator.sharedIndexJobs.size) await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(runtime.store.state.sharedScopes[0].index.status, 'ready');
     const sharedIndex = await manager.hub.search('保持功能简单', { projects: ['scope-brain-brain-default'] });
-    assert.ok(sharedIndex.results.some(r => r.uri.endsWith(`${memory.scopeId}.md`) && r.snippet.includes('保持功能简单')), 'confirmed scoped memory reaches the real vector index');
-    const sharedRecall = await runtime.coordinator.retrieval.search({ projectId: memory.scopeId, query: '保持功能简单', scope: 'brain' });
+    assert.ok(sharedIndex.results.some(r => r.uri.includes('confirmed.md') && r.snippet.includes('保持功能简单')), 'confirmed global memory reaches the real vector index');
+    const sharedRecall = await runtime.coordinator.retrieval.search({ projectId: registrations[0].projectId, query: '保持功能简单', scope: 'brain' });
     assert.ok(sharedRecall.results.some(r => r.space_id === 'brain:brain-default' && r.match_channels.includes('index:vector-hub')), 'shared scope participates in vector recall: ' + JSON.stringify({ health: sharedRecall.health, results: sharedRecall.results.map(r => ({ space: r.space_id, entry: r.entry_id, channels: r.match_channels })) }));
     await runtime.close();
     const restarted = createEngineServer({ dataDir, analyzer, consume: true, bridgeUrl: `http://127.0.0.1:${bridgeServer.address().port}`, vectorUrl: `http://127.0.0.1:${vectorServer.address().port}` });
