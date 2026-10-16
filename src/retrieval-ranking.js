@@ -47,7 +47,8 @@ function intent(query) {
   const text = String(query || '').trim();
   if (/^(?:hello|hi|hey|你好|您好|早上好|晚上好|在吗)[\s!！。?？]*$/i.test(text)) return 'greeting';
   if (/^(?:为什么|怎么回事|这是什么意思|继续|然后呢|展开说说|why|continue|tell me more)[\s!！。?？]*$/i.test(text)) return 'followup';
-  if (/(你|本轮|本次|刚才|上一条|这段).*(知识|记忆|上下文|context|memory).*(来源|哪里|什么地方|收到|读取|获取|from|received)/i.test(text)) return 'followup';
+  const concreteTask = /(修复|实现|新增|设计|为什么|为何|如何|怎样|避免|并发|草稿|implement|fix|design|why|how)/i.test(text);
+  if (!concreteTask && /(你|本轮|本次|刚才|上一条|这段).*(知识|记忆|上下文|context|memory).*(来源|哪里|什么地方|收到|读取|获取|from|received)/i.test(text)) return 'followup';
   if (/(最近|最新|上次|上一[次回]|recent|latest|last)/i.test(text) && /(进度|开发|提交|修改|更新|改动|progress|commit|develop|change|update)/i.test(text)) return 'recent';
   return 'search';
 }
