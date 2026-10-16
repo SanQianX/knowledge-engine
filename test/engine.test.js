@@ -190,3 +190,38 @@ test('failed earlier commit blocks only its project; retry restores FIFO order',
     assert.equal(runtime.store.readRuntime(a.projectId).lastAnalyzedCommit, secondSha);
   } finally { await runtime.close(); await vector.close(); }
 });
+
+test('quota failure retains journal jobs and waiting commits across restart without retrying the model', async () => {
+  const { HeadlessAnalyzer } = require('../src/headless-analyzer');
+  const root = directory(), p = project(root, 'quota');
+  fs.writeFileSync(path.join(p.repoPath, 'next.txt'), 'next commit\n'); git(p.repoPath, ['add', '.']); git(p.repoPath, ['commit', '-qm', 'after quota']);
+  const nextSha = git(p.repoPath, ['rev-parse', 'HEAD']);
+  const dataDir = directory();
+  const journalId = `sha256:${'d'.repeat(64)}`;
+  const events = [p.commitSha, nextSha].map((commitSha, i) => ({ schema: 'git-commit-boundary/v1', sequence: i + 1, commitSha, parents: [], committedAt: new Date().toISOString() }));
+  const acks = [];
+  const bridge = { async registerConsumer() {}, async listJournals() { return [{ journalId }]; }, async readEvents({ fromSequence }) { return events.filter(e => e.sequence >= fromSequence); }, async ackConsumerCursor(name, sequence) { acks.push(sequence); }, close() {} };
+  const worker = new HeadlessAnalyzer({ workerPath: path.join(__dirname, 'fixtures', 'worker-lifecycle.cjs'), resolveProfile: () => ({ apiKey: 'test-not-a-secret', mainModel: 'quota' }) });
+  let runtime = await start({ dataDir, bridge, analyzer: worker });
+  try {
+    runtime.store.addProject({ ...p, journalId });
+    await runtime.coordinator.drain();
+    await eventually(() => runtime.store.listRuns(p.projectId).some(r => r.state === 'failed') && runtime.store.listRuns(p.projectId).some(r => r.phase === 'waiting-previous'));
+    const first = runtime.store.listRuns(p.projectId).find(r => r.commitSha === p.commitSha);
+    assert.equal(first.error.code, 'MODEL_QUOTA_EXHAUSTED');
+    assert.match(first.error.message, /额度|余额/);
+    assert.equal(runtime.store.readRuntime(p.projectId).lastAnalyzedCommit, p.trackingStartCommit, 'failed analysis cannot advance the baseline');
+    assert.ok(acks.includes(2), 'both jobs are durable before journal ACK');
+    const ids = runtime.store.listRuns(p.projectId).map(r => r.runId);
+    await runtime.close();
+    let calls = 0;
+    runtime = await start({ dataDir, bridge, analyzer: { async runClaim() { calls++; throw new Error('unexpected retry'); } } });
+    await runtime.coordinator.drain();
+    assert.deepEqual(runtime.store.listRuns(p.projectId).map(r => r.runId), ids);
+    assert.equal(calls, 0, 'restart never retries exhausted quota without an explicit retry');
+    const page = (await runtime.call(`/api/runs?summary=1&projectId=${p.projectId}`)).body;
+    assert.equal(page.runs.length, 2);
+    assert.equal(page.runs.find(r => r.commitSha === p.commitSha).error.code, 'MODEL_QUOTA_EXHAUSTED');
+    assert.equal(page.runs.find(r => r.commitSha === nextSha).phase, 'waiting-previous');
+  } finally { await runtime.close(); }
+});

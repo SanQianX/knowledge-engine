@@ -4,6 +4,7 @@ const path = require('node:path');
 const { frameFrozenEvidence, memoryCandidateContract } = require('./analysis-contract');
 const { finalizeAnalysisOutput } = require('./analysis-output');
 const { freezeKnowledgeTargets } = require('./knowledge-targets');
+const { analysisFailure } = require('./analysis-failures');
 
 class HeadlessAnalyzer {
   get sourceReadMode() { return 'isolated-frozen-evidence'; }
@@ -42,7 +43,7 @@ class HeadlessAnalyzer {
       const timer = setTimeout(() => stop(Object.assign(new Error('知识分析超时。'), { code: 'MODEL_TIMEOUT', retryable: true })), this.timeoutMs);
       child.on('message', message => {
         if (message?.type === 'complete') stop();
-        else if (message?.type === 'failure') stop(Object.assign(new Error('后台 Agent 分析失败，请检查模型配置。'), { code: ['AI_RUNTIME_REQUIRED', 'ANALYSIS_OUTPUT_MISSING'].includes(message.code) ? message.code : 'MODEL_FAILED', retryable: true }));
+        else if (message?.type === 'failure') stop(analysisFailure(message.code));
       });
       child.on('error', () => stop(Object.assign(new Error('无法启动后台分析进程。'), { code: 'WORKER_START_FAILED', retryable: true })));
       // A completion message is not an exit: retain the directory lock until

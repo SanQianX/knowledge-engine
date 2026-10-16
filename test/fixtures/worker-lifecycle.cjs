@@ -5,6 +5,7 @@ process.on('SIGTERM', () => {});
 process.once('message', job => {
   fs.writeFileSync(path.join(job.stagingPath, 'worker.pid'), String(process.pid));
   fs.writeFileSync(path.join(job.stagingPath, 'prompt.txt'), job.prompt);
+  if (job.profile.mainModel === 'quota') { process.send({ type: 'failure', code: 'MODEL_QUOTA_EXHAUSTED' }); return; }
   if (job.profile.mainModel === 'hang') return;
   if (job.profile.mainModel === 'no-output') { process.send({ type: 'complete' }); return; }
   fs.mkdirSync(path.join(job.stagingPath, 'files'));

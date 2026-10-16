@@ -137,6 +137,7 @@ class EngineCoordinator extends EventEmitter {
     return job;
   }
   async drainJournals() {
+    const prior = JSON.stringify([...this.journalFailures.values()]);
     this.draining = true;
     try {
       await this.bridge.registerConsumer('knowledge-engine', { journals: ['*'] });
@@ -157,7 +158,13 @@ class EngineCoordinator extends EventEmitter {
     finally {
       this.journalError = this.journalFailures.size ? '事件消费异常，未消费证据与游标已保留，请查看诊断日志。' : null;
       this.draining = false;
+      if (JSON.stringify([...this.journalFailures.values()]) !== prior) this.emit('progress', this.store.addEvent({ type: 'knowledge.journal', summary: this.journalError ? '提交事件消费受阻，请查看维护状态' : '提交事件消费已恢复' }));
     }
+  }
+  maintenanceStatus(projectId) {
+    const project = projectId ? this.store.getProject(projectId) : null;
+    const failures = [...this.journalFailures.values()].filter(failure => !projectId || failure.journalId === 'connection' || (failure.journalId === 'global' && !failure.projectId) || failure.projectId === projectId || failure.journalId === project?.journalId);
+    return { projectId: projectId || null, executionEnabled: this.executionEnabled && (!projectId || !!project && (!this.allowedProjects || this.allowedProjects.has(projectId))), consuming: this.consume, journal: { error: failures.length ? this.journalError : null, failures } };
   }
   async recordJournalFailure(journalId, error) {
     const context = error.journalContext || {};

@@ -4,6 +4,7 @@ const { pathToFileURL } = require('node:url');
 const { evaluateAutomationToolUse } = require('./runtime/automation-config');
 const { RuntimeLayout } = require('./runtime/layout');
 const { ANALYSIS_SYSTEM_INSTRUCTIONS, requireAnalysisOutput } = require('./analysis-contract');
+const { classifyAnalysisFailure, analysisFailure } = require('./analysis-failures');
 
 const abortController = new AbortController();
 process.once('SIGTERM', () => abortController.abort());
@@ -11,6 +12,7 @@ process.once('disconnect', () => abortController.abort());
 process.on('message', message => { if (message?.type === 'cancel') abortController.abort(); });
 
 process.once('message', async job => {
+  let failureCode = 'MODEL_FAILED';
   try {
     const { query } = await import(pathToFileURL(require.resolve('@anthropic-ai/claude-agent-sdk')).href);
     const layout = new RuntimeLayout(job.stagingPath);
@@ -40,15 +42,17 @@ process.once('message', async job => {
       }] }] },
     } });
     for await (const message of turn) {
+      if (message.type === 'assistant' && message.error) failureCode = classifyAnalysisFailure(message.error);
       if (message.type === 'result') completed = message.subtype === 'success' && !message.is_error;
     }
-    if (!completed) throw new Error('MODEL_FAILED');
+    if (!completed) throw analysisFailure(failureCode);
     requireAnalysisOutput(job.manifestPath);
     process.send({ type: 'complete' }, () => process.exit(0));
   } catch (error) {
     // SDK/provider messages can echo credentials. Only controlled codes leave
     // this isolated process; raw output is never written to state or logs.
-    const code = error.code === 'MODULE_NOT_FOUND' ? 'AI_RUNTIME_REQUIRED' : error.code === 'ANALYSIS_OUTPUT_MISSING' ? error.code : 'MODEL_FAILED';
+    const classified = classifyAnalysisFailure(error);
+    const code = classified === 'MODEL_FAILED' ? failureCode : classified;
     process.send({ type: 'failure', code }, () => process.exit(1));
   }
 });
