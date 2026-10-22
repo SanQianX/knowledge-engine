@@ -28,12 +28,14 @@ test('protect applies inheritance removal plus current-user and SYSTEM grants on
   const calls = [];
   protectRealFixtureRoot(root, { parent: os.tmpdir(), prefix: PREFIX, exec: (cmd, args) => { calls.push([cmd, ...args]); } });
   if (process.platform === 'win32') {
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.equal(calls[0][0], 'icacls');
-    assert.ok(calls[0].includes('/inheritance:r'));
-    assert.ok(calls[0].includes('/grant:r'));
-    assert.ok(calls[0].some(argument => argument.startsWith(process.env.USERDOMAIN) && argument.endsWith(':(OI)(CI)F')), 'current user full-control grant');
-    assert.ok(calls[0].includes('*S-1-5-18:(OI)(CI)F'), 'SYSTEM grant by SID');
+    assert.ok(calls[0].includes('/reset'), 'explicit creator-token ACEs must be discarded before grants');
+    assert.equal(calls[1][0], 'icacls');
+    assert.ok(calls[1].includes('/inheritance:r'));
+    assert.ok(calls[1].includes('/grant:r'));
+    assert.ok(calls[1].some(argument => argument.startsWith(process.env.USERDOMAIN) && argument.endsWith(':(OI)(CI)F')), 'current user full-control grant');
+    assert.ok(calls[1].includes('*S-1-5-18:(OI)(CI)F'), 'SYSTEM grant by SID');
   } else {
     assert.equal(calls.length, 0, 'non-Windows must use mode bits, never icacls');
     assert.equal(fs.statSync(root).mode & 0o777, 0o700);
@@ -68,6 +70,25 @@ test('rejects roots outside the owned temp parent, wrong prefixes, symbolic link
   fs.writeFileSync(file, 'x');
   assert.throws(() => assertFixtureRoot(file, { parent: owned, prefix: PREFIX }), { code: 'FIXTURE_ROOT_NOT_DIRECTORY' });
   assert.equal(assertFixtureRoot(root, { parent: owned, prefix: PREFIX }), root);
+});
+
+test('protection discards explicit builtin ACEs a creator token may have planted on the fixture root', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), PREFIX));
+  t.after(clean(root));
+  if (process.platform === 'win32') {
+    // GitHub Windows runners run under an admin-provisioned account whose
+    // token default DACL plants explicit builtin-group ACEs on every object
+    // the process creates; /inheritance:r alone cannot remove those.
+    const builtinUsers = 'BUILTIN' + String.fromCharCode(92) + 'Users:(OI)(CI)F';
+    execFileSync('icacls', [root, '/grant:r', builtinUsers], { windowsHide: true, stdio: 'pipe' });
+    protectRealFixtureRoot(root, { parent: os.tmpdir(), prefix: PREFIX });
+    const acl = execFileSync('icacls', [root], { encoding: 'utf8', windowsHide: true, stdio: 'pipe' });
+    assert.ok(!acl.includes('BUILTIN'), 'explicit builtin grants from the creator token must not survive protection');
+    assert.ok(!acl.includes('Everyone'));
+  } else {
+    protectRealFixtureRoot(root, { parent: os.tmpdir(), prefix: PREFIX });
+    assert.equal(fs.statSync(root).mode & 0o777, 0o700);
+  }
 });
 
 test('real protection restricts an owned fixture root to the current user and SYSTEM', async t => {

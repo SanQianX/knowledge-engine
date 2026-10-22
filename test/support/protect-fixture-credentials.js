@@ -29,7 +29,15 @@ function protectRealFixtureRoot(root, options = {}) {
   const platform = options.platform || process.platform;
   if (platform === 'win32') {
     const exec = options.exec || execFileSync;
-    try { exec('icacls', [resolved, '/inheritance:r', '/grant:r', ...windowsGrants()], { windowsHide: true, stdio: 'pipe' }); }
+    try {
+      // /reset first: /inheritance:r only strips INHERITED ACEs, so explicit
+      // ACEs planted by the creator token's default DACL (GitHub Windows
+      // runners run under such an admin-provisioned account) would survive.
+      // /reset rebuilds the DACL from parent inheritance alone, discarding
+      // every explicit ACE, before the strip-and-grant pass runs.
+      exec('icacls', [resolved, '/reset'], { windowsHide: true, stdio: 'pipe' });
+      exec('icacls', [resolved, '/inheritance:r', '/grant:r', ...windowsGrants()], { windowsHide: true, stdio: 'pipe' });
+    }
     catch (error) { throw Object.assign(new Error(`Real credential fixture ACL protection failed: ${error.message}`), { code: 'FIXTURE_ACL_PROTECTION_FAILED' }); }
   } else {
     const chmod = options.chmod || fs.chmodSync;
