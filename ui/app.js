@@ -15,6 +15,9 @@ let scopedProjectId = '';
 let toastTimer;
 let runPollTimer;
 let selectedRunId = null;
+// 同一 run 的重试意图在途时防重：按钮会被 loadRuns()/showRunDetail() 重建，
+// DOM 状态不可靠，按 runId 记录才能在重渲染/切换后仍然生效。
+const retryInFlightRuns = new Set();
 let viewEpoch = 0;
 const embedParams = new URLSearchParams(location.search);
 const embedded = embedParams.get('embed') === '1';
@@ -197,8 +200,26 @@ async function showRunDetail(runId) {
   $('#runDetail').classList.remove('hidden');
   $('#runDetailId').textContent = run.runId;
   $('#runTimeline').innerHTML = runTimeline(run);
-  $('#runMeta').innerHTML = `<div><dt>状态</dt><dd>${stateBadge(run.state)}</dd></div><div><dt>项目 / commit</dt><dd>${escapeHtml(run.projectId)} · <span class="mono">${shortSha(run.commitSha)}</span></dd></div><div><dt>触发入口</dt><dd class="mono">${escapeHtml(run.trigger)}</dd></div><div><dt>错误</dt><dd>${run.error ? escapeHtml(run.error.message) : '–'}</dd></div>${run.error?.details ? `<div><dt>索引原因</dt><dd>${escapeHtml(run.error.details.upstreamMessage)}<br>${escapeHtml(run.error.details.failureKind)} · HTTP ${escapeHtml(run.error.details.httpStatus ?? '–')} · ${escapeHtml(run.error.details.upstreamCode)}<br>请求 ${escapeHtml(run.error.details.requestId || '–')} · 尝试 ${escapeHtml(run.error.details.attempt)}</dd></div>` : ''}${run.error?.retryable ? '<div><dt>恢复</dt><dd><button class="btn" id="retryRun">重试失败阶段</button></dd></div>' : ''}`;
-  $('#retryRun')?.addEventListener('click', async () => { await api(`/api/runs/${encodeURIComponent(runId)}/retry`, { method: 'POST' }); loadRuns(); });
+  $('#runMeta').innerHTML = `<div><dt>状态</dt><dd>${stateBadge(run.state)}</dd></div><div><dt>项目 / commit</dt><dd>${escapeHtml(run.projectId)} · <span class="mono">${shortSha(run.commitSha)}</span></dd></div><div><dt>触发入口</dt><dd class="mono">${escapeHtml(run.trigger)}</dd></div><div><dt>错误</dt><dd>${run.error ? escapeHtml(run.error.message) : '–'}</dd></div>${run.error?.details ? `<div><dt>索引原因</dt><dd>${escapeHtml(run.error.details.upstreamMessage)}<br>${escapeHtml(run.error.details.failureKind)} · HTTP ${escapeHtml(run.error.details.httpStatus ?? '–')} · ${escapeHtml(run.error.details.upstreamCode)}<br>请求 ${escapeHtml(run.error.details.requestId || '–')} · 尝试 ${escapeHtml(run.error.details.attempt)}</dd></div>` : ''}${run.error?.retryable ? `<div><dt>恢复</dt><dd><button class="btn" id="retryRun"${retryInFlightRuns.has(run.runId) ? ' disabled' : ''}>重试失败阶段</button></dd></div>` : ''}`;
+  $('#retryRun')?.addEventListener('click', async event => {
+    if (retryInFlightRuns.has(runId)) return;
+    retryInFlightRuns.add(runId);
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api(`/api/runs/${encodeURIComponent(runId)}/retry`, { method: 'POST' });
+    } catch (error) {
+      // TypeError = 请求未送达/连接被断；BAD_JSON = 响应体未完整到达。两种都代表
+      // 结果未知：同一意图不能重复派发，先查询运行真实状态。
+      if (error instanceof TypeError || error.message === 'BAD_JSON') {
+        toast('重试结果未知，正在查询运行状态…');
+        try { await showRunDetail(runId); } catch {}
+      }
+    } finally {
+      retryInFlightRuns.delete(runId);
+    }
+    loadRuns();
+  });
   $('#runStaging').textContent = run.staging ? JSON.stringify(run.staging, null, 2) : '该运行没有 staging 产物。';
 }
 
