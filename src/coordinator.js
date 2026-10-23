@@ -187,10 +187,34 @@ class EngineCoordinator extends EventEmitter {
           if (event.schema === 'ai-coding-event/v1' && ['user_prompt', 'assistant_response'].includes(event.eventType)) await this.conversations.appendBridgeEvent(p.projectId, { ...event, journalId: journal.journalId });
           if (event.schema === 'git-commit-boundary/v1' && /^[a-f0-9]{7,64}$/i.test(event.commitSha || '')) {
             if (!fs.existsSync(this.layout.getProjectCommitBoundaryPath(p.projectId, event.commitSha))) this.conversations.writeBoundary(p.projectId, { ...event, journalId: journal.journalId, parentShas: event.parents || [], bridgeCursorAtCommit: event.sequence, journalSequence: event.sequence, operationId: event.operationId || `bridge-${journal.journalId}-${event.sequence}`, committedAt: event.committedAt || event.capturedAt });
-            const baseline = p.runtime.lastAnalyzedCommit || p.trackingStartCommit;
+            // The history floor is the tracking baseline: commits at or before it
+            // are pre-existing history and are never analysed. The analysed head
+            // is not the floor - a captured commit behind the head that was never
+            // completed and never attempted was MISSED (its boundary event
+            // arrived after the head moved past it), and dropping it would
+            // discard durable evidence for good. But auto-analysing it is worse:
+            // promotion would advance the head BACKWARDS to the old commit and
+            // its replace/delete operations could overwrite the newer knowledge
+            // the head already promoted at the same paths. Safety and existing
+            // commit order win: the late commit is flagged into a durable
+            // registry awaiting CONTROLLED handling - no run, no pointer
+            // movement, no fake success, no silent drop. A completed commit is
+            // held by the processing ledger; a previously failed or interrupted
+            // commit keeps its claim snapshot and is only re-run on an explicit
+            // user retry.
+            const floor = p.trackingStartCommit || null;
+            const head = p.runtime.lastAnalyzedCommit || null;
+            const isAncestorOf = async ancestor => (await execGit(p.repoPath, ['merge-base', '--is-ancestor', event.commitSha, ancestor])).ok;
+            const preBaseline = Boolean(floor) && (floor === event.commitSha || await isAncestorOf(floor));
+            const atHead = Boolean(head) && head === event.commitSha;
+            const behindHead = Boolean(head) && !atHead && await isAncestorOf(head);
             const completed = this.reconciler.processingLedger.read(p.projectId, event.commitSha);
-            const historical = baseline && (baseline === event.commitSha || (await execGit(p.repoPath, ['merge-base', '--is-ancestor', event.commitSha, baseline])).ok);
-            if (!completed && !historical && this.store.getProject(p.projectId)?.enabled) this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
+            const attempted = fs.existsSync(this.reconciler.claimStore.filePath(p.projectId, event.commitSha));
+            const skip = Boolean(completed) || preBaseline || atHead || (behindHead && attempted);
+            if (!skip && this.store.getProject(p.projectId)?.enabled) {
+              if (behindHead) await this.flagLateCommit(p, { commitSha: event.commitSha, journalId: journal.journalId, journalSequence: event.sequence, analysedHead: head });
+              else this.enqueue({ projectId: p.projectId, commitSha: event.commitSha, trigger: 'git-hook', journalId: journal.journalId, journalSequence: event.sequence });
+            }
           }
         }
       } catch (error) { error.journalContext = { projectId: p?.projectId, sequence: event.sequence, source: event.source }; throw error; }
@@ -199,6 +223,27 @@ class EngineCoordinator extends EventEmitter {
     // All evidence projections and queued jobs are durable before ACK.
     if (through > cursor) this.store.setJournalCursor(journal.journalId, through);
     await this.bridge.ackConsumerCursor('knowledge-engine', through, { journalId: journal.journalId });
+  }
+  // A late captured commit is durable evidence, but it can never be auto-healed
+  // here: promoting it would regress lastAnalyzedCommit and could overwrite
+  // newer knowledge at the same paths. It is registered (idempotently) for
+  // CONTROLLED handling instead - the registry is part of the project runtime,
+  // so it survives restarts and surfaces via /api/snapshot; the event log and
+  // the warn diagnostic make the out-of-order state visible without any fake
+  // success. Discharging a late commit is an explicit operator decision.
+  async flagLateCommit(project, { commitSha, journalId, journalSequence, analysedHead }) {
+    const runtime = this.store.readRuntime(project.projectId);
+    const known = (runtime.lateCommits || []).some(entry => entry.commitSha === commitSha)
+      || this.store.listRuns(project.projectId).some(run => run.commitSha === commitSha);
+    if (known) return;
+    await this.store.updateRuntime(project.projectId, draft => {
+      draft.lateCommits = draft.lateCommits || [];
+      if (!draft.lateCommits.some(entry => entry.commitSha === commitSha)) {
+        draft.lateCommits.push({ commitSha, firstSeenAt: new Date().toISOString(), journalId, journalSequence, analysedHeadAtCapture: analysedHead });
+      }
+    });
+    this.store.addEvent({ type: 'knowledge.journal', projectId: project.projectId, commitSha, summary: `捕获到晚到的旧提交 ${commitSha.slice(0, 12)}，已登记为需受控处理，未自动分析` });
+    await this.diagnostics.warn('reconcile.late_commit_flagged', '晚到的旧提交已登记为待受控处理：不自动分析、不推进分析头、不修改知识树。', { projectId: project.projectId, commitSha, phase: 'consuming', context: { journalId, journalSequence, analysedHead } });
   }
   pump() {
     if (this.closed || !this.executionEnabled) return;
